@@ -2,6 +2,8 @@
 
 A CUDA + OpenGL rendering engine. CUDA writes pixels into a Pixel Buffer Object; OpenGL displays it as a fullscreen quad.
 
+Aiming to create a fully loaded path tracer with support for neural rendering and cool physical simulation features!
+
 ## Requirements
 
 - Windows 10/11
