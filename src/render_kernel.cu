@@ -25,7 +25,7 @@
 #include <cstdlib>
 #include <cmath>
 
-static const int LIGHT_SAMPLES = 50;
+static const int LIGHT_SAMPLES = 16;
 
 // ---------------------------------------------------------------------------
 //  Error-checking helpers
@@ -202,10 +202,9 @@ __global__ void renderKernel(uint32_t* framebuffer,
             shadowRay.origin = sceneIntersection.hitPoint;
             shadowRay.direction = directionToLight;
 
-            Intersection shadowIntersection;
-            if (sceneIntersect(shadowRay, triangles, triangleCount,
-                               bvhNodes, bvhNodeCount, bvhPrimIndices,
-                               1e-4f, distToLight - 1e-3f, shadowIntersection)) {
+            if (sceneIntersectAnyHit(shadowRay, triangles,
+                                     bvhNodes, bvhNodeCount, bvhPrimIndices,
+                                     1e-4f, distToLight - 1e-3f)) {
                 continue;
             }
 

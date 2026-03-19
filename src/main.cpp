@@ -13,9 +13,11 @@
 // ── GLM ─────────────────────────────────────────────────────────────
 #include <glm/glm.hpp>
 
-// ── stb_image ───────────────────────────────────────────────────────
+// ── stb_image / stb_image_write ─────────────────────────────────────
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 // ── tinyobjloader ───────────────────────────────────────────────────
 #define TINYOBJLOADER_IMPLEMENTATION
@@ -31,6 +33,8 @@
 #include <string>
 #include <vector>
 #include <cstdlib>
+#include <cstdio>
+#include <cstdint>
 #include <fstream>
 #include <cmath>
 
@@ -43,6 +47,80 @@ static GLuint g_texture = 0;   // Screen-sized texture (PBO → texture)
 static GLuint g_vao     = 0;   // Fullscreen-quad VAO
 static GLuint g_vbo     = 0;   // Fullscreen-quad VBO
 static GLuint g_shader  = 0;   // Minimal shader program
+
+// ── Video recording ─────────────────────────────────────────────────
+// Press R to start/stop.  Requires FFmpeg on PATH.
+// Output playback FPS is independent of render FPS — slow renders still
+// produce a smooth video.
+static FILE*                 g_recordPipe  = nullptr;
+static bool                  g_recording   = false;
+static std::vector<uint8_t>  g_pixelBuf;
+static constexpr int         RECORD_FPS    = 30;   // playback FPS of output video
+
+static void startRecording()
+{
+    char cmd[512];
+    // -f rawvideo + -pixel_format rgba: we send raw RGBA bytes from glReadPixels
+    // -vf vflip:                        OpenGL origin is bottom-left; flip to top-left
+    // -crf 18:                          high quality H.264
+    snprintf(cmd, sizeof(cmd),
+        "ffmpeg -y -f rawvideo -pixel_format rgba -video_size %dx%d -r %d -i pipe:0 "
+        "-vf vflip -c:v libx264 -crf 18 -pix_fmt yuv420p output.mp4",
+        g_windowWidth, g_windowHeight, RECORD_FPS);
+
+#ifdef _WIN32
+    g_recordPipe = _popen(cmd, "wb");
+#else
+    g_recordPipe = popen(cmd, "w");
+#endif
+
+    if (g_recordPipe) {
+        g_recording = true;
+        g_pixelBuf.resize(static_cast<size_t>(g_windowWidth * g_windowHeight * 4));
+        std::cout << "[record] Recording started → output.mp4  (playback " << RECORD_FPS << " fps)\n";
+    } else {
+        std::cerr << "[record] Could not open FFmpeg pipe. Is ffmpeg on PATH?\n";
+    }
+}
+
+static void stopRecording()
+{
+    if (!g_recordPipe) return;
+    g_recording = false;
+#ifdef _WIN32
+    _pclose(g_recordPipe);
+#else
+    pclose(g_recordPipe);
+#endif
+    g_recordPipe = nullptr;
+    std::cout << "[record] Recording stopped → output.mp4\n";
+}
+
+static void captureScreenshot()
+{
+    std::vector<uint8_t> pixels(static_cast<size_t>(g_windowWidth * g_windowHeight * 4));
+    glReadPixels(0, 0, g_windowWidth, g_windowHeight,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+
+    // OpenGL pixel origin is bottom-left; flip rows so the PNG is top-left.
+    const int stride = g_windowWidth * 4;
+    for (int y = 0; y < g_windowHeight / 2; ++y) {
+        uint8_t* rowA = pixels.data() + y * stride;
+        uint8_t* rowB = pixels.data() + (g_windowHeight - 1 - y) * stride;
+        for (int x = 0; x < stride; ++x)
+            std::swap(rowA[x], rowB[x]);
+    }
+
+    // Build a filename with a frame counter so shots don't overwrite each other.
+    static int shotIndex = 0;
+    char filename[64];
+    snprintf(filename, sizeof(filename), "screenshot_%04d.png", shotIndex++);
+
+    if (stbi_write_png(filename, g_windowWidth, g_windowHeight, 4, pixels.data(), stride))
+        std::cout << "[screenshot] Saved " << filename << "\n";
+    else
+        std::cerr << "[screenshot] Failed to write " << filename << "\n";
+}
 
 // =====================================================================
 //  Shader sources (fullscreen textured quad)
@@ -414,6 +492,14 @@ static void keyCallback(GLFWwindow* window, int key, int /*scancode*/,
 {
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
         glfwSetWindowShouldClose(window, GLFW_TRUE);
+
+    if (key == GLFW_KEY_R && action == GLFW_PRESS) {
+        if (!g_recording) startRecording();
+        else              stopRecording();
+    }
+
+    if (key == GLFW_KEY_C && action == GLFW_PRESS)
+        captureScreenshot();
 }
 
 static void framebufferSizeCallback(GLFWwindow* /*window*/, int w, int h)
@@ -691,12 +777,28 @@ int main(int argc, char** argv)
     std::cout << "[cuda] Ready – entering render loop\n";
 
     // ── Render loop ──────────────────────────────────────────────────
+    double fpsLastTime  = glfwGetTime();
+    int    fpsFrameCount = 0;
+
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
 
         // 1. CUDA renders into the PBO
         cudaRender(g_windowWidth, g_windowHeight);
+
+        // FPS counter — update window title once per second
+        ++fpsFrameCount;
+        double now     = glfwGetTime();
+        double elapsed = now - fpsLastTime;
+        if (elapsed >= 1.0) {
+            double fps = fpsFrameCount / elapsed;
+            char title[128];
+            snprintf(title, sizeof(title), "RedTruthEngine  |  %.1f fps  |  %.2f ms", fps, 1000.0 / fps);
+            glfwSetWindowTitle(window, title);
+            fpsLastTime   = now;
+            fpsFrameCount = 0;
+        }
 
         // 2. Copy PBO → texture
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g_pbo);
@@ -714,10 +816,19 @@ int main(int argc, char** argv)
         glBindVertexArray(g_vao);
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
+        // Capture frame for video recording if active.
+        // glReadPixels syncs the GPU before reading, so no extra fence needed.
+        if (g_recording && g_recordPipe) {
+            glReadPixels(0, 0, g_windowWidth, g_windowHeight,
+                         GL_RGBA, GL_UNSIGNED_BYTE, g_pixelBuf.data());
+            fwrite(g_pixelBuf.data(), 1, g_pixelBuf.size(), g_recordPipe);
+        }
+
         glfwSwapBuffers(window);
     }
 
     // ── Cleanup ──────────────────────────────────────────────────────
+    if (g_recording) stopRecording();
     cudaCleanup();
     glDeleteProgram(g_shader);
     glDeleteBuffers(1, &g_pbo);

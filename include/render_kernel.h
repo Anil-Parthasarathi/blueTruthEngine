@@ -6,6 +6,14 @@
 // Data types shared between host (C++) and device (CUDA)
 // ---------------------------------------------------------------------------
 
+struct PathState {
+    Ray        ray;
+    Float3     throughput;
+    Float3     accumulatedColor;
+    int        bounceCount;
+    uint32_t   pixelIndex;
+};
+
 struct Float3 {
     float x, y, z;
 };

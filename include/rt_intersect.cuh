@@ -80,6 +80,48 @@ __device__ __forceinline__ bool rayAABBIntersect(
     return tMin <= tMax;
 }
 
+// Any-hit variant — returns true as soon as one blocker is found.
+// Use this for shadow rays: no need to find the closest hit.
+__device__ __forceinline__ bool sceneIntersectAnyHit(
+    const Ray& ray,
+    const TriangleData* tris,
+    const LinearBVHNode* bvhNodes, int bvhNodeCount,
+    const int* bvhPrimIndices,
+    float tMin, float tMax)
+{
+    const Float3 invDir = { 1.0f / ray.direction.x,
+                             1.0f / ray.direction.y,
+                             1.0f / ray.direction.z };
+
+    int stack[64];
+    int stackTop = 0;
+    stack[stackTop++] = 0;
+
+    while (stackTop > 0) {
+        const int idx = stack[--stackTop];
+        if (idx < 0 || idx >= bvhNodeCount) continue;
+
+        const LinearBVHNode& node = bvhNodes[idx];
+
+        if (!rayAABBIntersect(ray.origin, invDir, node.bmin, node.bmax, tMin, tMax))
+            continue;
+
+        if (node.primCount > 0) {
+            for (uint32_t p = node.primStart; p < node.primStart + node.primCount; ++p) {
+                float t, u, v;
+                if (rayTriangleIntersect(ray.origin, ray.direction,
+                                         tris[bvhPrimIndices[p]], tMin, tMax, t, u, v))
+                    return true; // blocked — no need to go further
+            }
+        } else {
+            if (stackTop < 63) stack[stackTop++] = idx + (int)node.rightOffset;
+            if (stackTop < 63) stack[stackTop++] = idx + 1;
+        }
+    }
+
+    return false;
+}
+
 __device__ __forceinline__ bool sceneIntersect(
     const Ray& ray,
     const TriangleData* tris, int /*triCount*/,
