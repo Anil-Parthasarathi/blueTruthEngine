@@ -23,6 +23,7 @@
 
 // ── Project headers ─────────────────────────────────────────────────
 #include "render_kernel.h"
+#include "bvh_builder.h"
 #include "scene.h"
 
 // ── Standard library ────────────────────────────────────────────────
@@ -217,6 +218,42 @@ static Float3 transformPoint(const Float3& p,
     return {x, y, z};
 }
 
+// Like transformPoint but for directions: apply rotations only (no scale, no translation).
+static Float3 transformNormal(const Float3& n,
+                               const MeshDesc::TransformDesc& t)
+{
+    float x = n.x, y = n.y, z = n.z;
+
+    const float degToRad = 3.14159265358979323846f / 180.0f;
+    float rx = t.rotXDegrees * degToRad;
+    float ry = t.rotYDegrees * degToRad;
+    float rz = t.rotZDegrees * degToRad;
+
+    {
+        float cx = std::cos(rx), sx = std::sin(rx);
+        float y2 = y * cx - z * sx;
+        float z2 = y * sx + z * cx;
+        y = y2; z = z2;
+    }
+    {
+        float cy = std::cos(ry), sy = std::sin(ry);
+        float x2 = x * cy + z * sy;
+        float z2 = -x * sy + z * cy;
+        x = x2; z = z2;
+    }
+    {
+        float cz = std::cos(rz), sz = std::sin(rz);
+        float x2 = x * cz - y * sz;
+        float y2 = x * sz + y * cz;
+        x = x2; y = y2;
+    }
+
+    // Normalize (handles any uniform scale implicitly).
+    float len = std::sqrt(x * x + y * y + z * z);
+    if (len > 1e-8f) { x /= len; y /= len; z /= len; }
+    return {x, y, z};
+}
+
 static std::vector<TriangleData> loadTrianglesFromObj(
     const std::string& path,
     const MeshDesc::TransformDesc& transform)
@@ -238,7 +275,6 @@ static std::vector<TriangleData> loadTrianglesFromObj(
     std::vector<TriangleData> tris;
 
     auto getV = [&](int vertexIndex) -> Float3 {
-        // tinyobj uses 0-based indices; negative index indicates missing data.
         if (vertexIndex < 0) {
             std::cerr << "[mesh] Invalid vertex index in \"" << path << "\"\n";
             std::exit(EXIT_FAILURE);
@@ -246,6 +282,15 @@ static std::vector<TriangleData> loadTrianglesFromObj(
         return { attrib.vertices[3 * vertexIndex + 0],
                  attrib.vertices[3 * vertexIndex + 1],
                  attrib.vertices[3 * vertexIndex + 2] };
+    };
+
+    // Returns the vertex normal for the given tinyobj normal_index, or a
+    // zero vector when the OBJ has no normals (caller falls back to geometric).
+    auto getN = [&](int normalIndex) -> Float3 {
+        if (normalIndex < 0 || attrib.normals.empty()) return {0.0f, 0.0f, 0.0f};
+        return { attrib.normals[3 * normalIndex + 0],
+                 attrib.normals[3 * normalIndex + 1],
+                 attrib.normals[3 * normalIndex + 2] };
     };
 
     for (const auto& shape : shapes) {
@@ -266,6 +311,33 @@ static std::vector<TriangleData> loadTrianglesFromObj(
             t.v0 = transformPoint(getV(i0.vertex_index), transform);
             t.v1 = transformPoint(getV(i1.vertex_index), transform);
             t.v2 = transformPoint(getV(i2.vertex_index), transform);
+
+            Float3 rawN0 = getN(i0.normal_index);
+            Float3 rawN1 = getN(i1.normal_index);
+            Float3 rawN2 = getN(i2.normal_index);
+
+            // If any vertex is missing a normal, fall back to the geometric normal
+            // for all three vertices so the triangle is consistently flat-shaded.
+            const bool hasNormals = (i0.normal_index >= 0) &&
+                                    (i1.normal_index >= 0) &&
+                                    (i2.normal_index >= 0) &&
+                                    !attrib.normals.empty();
+            if (hasNormals) {
+                t.n0 = transformNormal(rawN0, transform);
+                t.n1 = transformNormal(rawN1, transform);
+                t.n2 = transformNormal(rawN2, transform);
+            } else {
+                // Compute geometric normal and use it for all three vertices.
+                const Float3 e1 = { t.v1.x - t.v0.x, t.v1.y - t.v0.y, t.v1.z - t.v0.z };
+                const Float3 e2 = { t.v2.x - t.v0.x, t.v2.y - t.v0.y, t.v2.z - t.v0.z };
+                Float3 gn = { e1.y * e2.z - e1.z * e2.y,
+                              e1.z * e2.x - e1.x * e2.z,
+                              e1.x * e2.y - e1.y * e2.x };
+                float len = std::sqrt(gn.x*gn.x + gn.y*gn.y + gn.z*gn.z);
+                if (len > 1e-8f) { gn.x /= len; gn.y /= len; gn.z /= len; }
+                t.n0 = t.n1 = t.n2 = gn;
+            }
+
             tris.push_back(t);
         }
     }
@@ -581,6 +653,12 @@ int main(int argc, char** argv)
                    materials.data(), static_cast<int>(materials.size()),
                    triangleMaterialIds.data(),
                    g_windowWidth, g_windowHeight);
+
+    {
+        BVHBuildResult bvh = buildBVH(triangles.data(), static_cast<int>(triangles.size()));
+        cudaInitBVH(bvh.nodes.data(),      static_cast<int>(bvh.nodes.size()),
+                    bvh.primIndices.data(), static_cast<int>(bvh.primIndices.size()));
+    }
 
     cudaInitTriangleEmission(triangleEmission.data(),
                              static_cast<int>(triangleEmission.size()));

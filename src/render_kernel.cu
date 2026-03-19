@@ -25,7 +25,7 @@
 #include <cstdlib>
 #include <cmath>
 
-static const int LIGHT_SAMPLES = 300;
+static const int LIGHT_SAMPLES = 50;
 
 // ---------------------------------------------------------------------------
 //  Error-checking helpers
@@ -76,6 +76,11 @@ static float*       s_sceneEmitterCdf_d   = nullptr; // length emitterCount+1
 static BsdfData* s_bsdfs_d = nullptr;
 static int       s_bsdfCount = 0;
 static int*      s_triangleBsdfIds_d = nullptr; // length triangleCount
+
+// BVH acceleration structure (built on CPU by FastBVH, traversed on GPU)
+static LinearBVHNode* s_bvhNodes_d       = nullptr;
+static int            s_bvhNodeCount     = 0;
+static int*           s_bvhPrimIndices_d = nullptr; // reordered triangle indices
 
 // ---------------------------------------------------------------------------
 //  Render kernel
@@ -132,6 +137,12 @@ __global__ void renderKernel(uint32_t* framebuffer,
                               const int* emitterTriIndices,
                               const float* emitterTriCdf,
                               const float* sceneEmitterCdf,
+                              const BsdfData* bsdfs,
+                              int bsdfCount,
+                              const int* triangleBsdfIds,
+                              const LinearBVHNode* bvhNodes,
+                              int bvhNodeCount,
+                              const int* bvhPrimIndices,
                               uint32_t frameIndex)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -148,9 +159,10 @@ __global__ void renderKernel(uint32_t* framebuffer,
     // Primary ray from camera
     Ray primaryRay = generatePrimaryRay(x, y, width, height);
 
-    // Intersect scene (brute force for now; BVH later)
     Intersection sceneIntersection;
-    if (sceneIntersect(primaryRay, triangles, triangleCount, 1e-4f, 1e30f, sceneIntersection)) {
+    if (sceneIntersect(primaryRay, triangles, triangleCount,
+                       bvhNodes, bvhNodeCount, bvhPrimIndices,
+                       1e-4f, 1e30f, sceneIntersection)) {
         int matId = triangleMaterialIds ? triangleMaterialIds[sceneIntersection.triangleIndex] : 0;
         if (matId < 0 || matId >= materialCount) matId = 0;
 
@@ -161,6 +173,12 @@ __global__ void renderKernel(uint32_t* framebuffer,
                 finalColor = add3(finalColor, e);
             }
         }
+
+        // Get the bsdf data for the hit triangle
+        int bsdfId = triangleBsdfIds[sceneIntersection.triangleIndex];
+        const BsdfData bsdf = bsdfs[bsdfId];
+
+        Float3 directLight = {0.0f, 0.0f, 0.0f};
 
         for (int i = 0; i < LIGHT_SAMPLES; i++) {
             float uLight0 = rngNextFloat01(rng);
@@ -174,17 +192,53 @@ __global__ void renderKernel(uint32_t* framebuffer,
                 sceneEmitterCdf,
                 uLight0, uLight1);
 
-            //float distToLight = distance3(sceneIntersection.hitPoint, chosenEmitter.position);
+            float distToLight = distance3(sceneIntersection.hitPoint, chosenEmitter.mesh.position);
+            Float3 directionToLight = div3(sub3(chosenEmitter.mesh.position, sceneIntersection.hitPoint), distToLight);
+
+            Float3 le = emitters[chosenEmitter.emitterIndex].radiance;
+            
+            // Cast shadow ray to check if the light is visible
+            Ray shadowRay;
+            shadowRay.origin = sceneIntersection.hitPoint;
+            shadowRay.direction = directionToLight;
+
+            Intersection shadowIntersection;
+            if (sceneIntersect(shadowRay, triangles, triangleCount,
+                               bvhNodes, bvhNodeCount, bvhPrimIndices,
+                               1e-4f, distToLight - 1e-3f, shadowIntersection)) {
+                continue;
+            }
+
+            float cosSurface = fmaxf(0.0f, dot3(sceneIntersection.hitNormal, directionToLight));
+            float cosLight   = fmaxf(0.0f, dot3(chosenEmitter.mesh.normal, mul3(directionToLight, -1.0f)));
+            float geo = cosSurface * cosLight / (distToLight * distToLight);
+
+            BsdfQueryRecord bRec{};
+            bRec.wi = toLocalFromNormal(sceneIntersection.hitNormal, mul3(primaryRay.direction, -1.0f));
+            bRec.wo = toLocalFromNormal(sceneIntersection.hitNormal, directionToLight);
+            bRec.measure = BSDF_ESolidAngle;
+
+            Float3 fr = bsdfEval(bsdf, bRec);
+
+            Float3 sampleColor = div3(mul3(le, mul3(fr, geo)), chosenEmitter.mesh.pdf * chosenEmitter.emitterPdf);
+
+            directLight = add3(directLight, sampleColor);
 
         }
-        
-        finalColor = add3(finalColor, Float3{1.0f, 0.0f, 0.0f});
 
+        // Average the direct lighting samples and add to final color.
+        // Emission (if any) was already added above and must NOT be averaged.
+        finalColor = add3(finalColor, div3(directLight, LIGHT_SAMPLES));
     }
 
-    uint8_t r = static_cast<uint8_t>(fminf(finalColor.x * 255.0f, 255.0f));
-    uint8_t g = static_cast<uint8_t>(fminf(finalColor.y * 255.0f, 255.0f));
-    uint8_t b = static_cast<uint8_t>(fminf(finalColor.z * 255.0f, 255.0f));
+    // Apply gamma correction (linear → sRGB display transform, γ = 2.2).
+    finalColor.x = powf(fmaxf(0.0f, fminf(finalColor.x, 1.0f)), 1.0f / 2.2f);
+    finalColor.y = powf(fmaxf(0.0f, fminf(finalColor.y, 1.0f)), 1.0f / 2.2f);
+    finalColor.z = powf(fmaxf(0.0f, fminf(finalColor.z, 1.0f)), 1.0f / 2.2f);
+
+    uint8_t r = static_cast<uint8_t>(finalColor.x * 255.0f);
+    uint8_t g = static_cast<uint8_t>(finalColor.y * 255.0f);
+    uint8_t b = static_cast<uint8_t>(finalColor.z * 255.0f);
     uint8_t a = 255;
 
 
@@ -375,6 +429,26 @@ void cudaInitBsdfs(const BsdfData* bsdfs, int bsdfCount,
                           cudaMemcpyHostToDevice));
 }
 
+void cudaInitBVH(const LinearBVHNode* nodes, int nodeCount,
+                 const int* primIndices, int primCount)
+{
+    if (s_bvhNodes_d)       { cudaFree(s_bvhNodes_d);       s_bvhNodes_d = nullptr; }
+    if (s_bvhPrimIndices_d) { cudaFree(s_bvhPrimIndices_d); s_bvhPrimIndices_d = nullptr; }
+    s_bvhNodeCount = 0;
+
+    if (!nodes || nodeCount <= 0 || !primIndices || primCount <= 0) return;
+
+    s_bvhNodeCount = nodeCount;
+
+    CUDA_CHECK(cudaMalloc(&s_bvhNodes_d,       sizeof(LinearBVHNode) * static_cast<size_t>(nodeCount)));
+    CUDA_CHECK(cudaMemcpy(s_bvhNodes_d, nodes, sizeof(LinearBVHNode) * static_cast<size_t>(nodeCount),
+                          cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMalloc(&s_bvhPrimIndices_d,            sizeof(int) * static_cast<size_t>(primCount)));
+    CUDA_CHECK(cudaMemcpy(s_bvhPrimIndices_d, primIndices, sizeof(int) * static_cast<size_t>(primCount),
+                          cudaMemcpyHostToDevice));
+}
+
 void cudaRegisterPBO(uint32_t pbo)
 {
     CUDA_CHECK(cudaGraphicsGLRegisterBuffer(
@@ -409,6 +483,10 @@ void cudaRender(int imageWidth, int imageHeight)
                                    s_emitterTriIndices_d,
                                    s_emitterTriCdf_d,
                                    s_sceneEmitterCdf_d,
+                                   s_bsdfs_d, s_bsdfCount,
+                                   s_triangleBsdfIds_d,
+                                   s_bvhNodes_d, s_bvhNodeCount,
+                                   s_bvhPrimIndices_d,
                                    s_frameIndex++);
     CUDA_CHECK(cudaGetLastError());
 
@@ -480,4 +558,14 @@ void cudaCleanup()
         s_triangleBsdfIds_d = nullptr;
     }
     s_bsdfCount = 0;
+
+    if (s_bvhNodes_d) {
+        cudaFree(s_bvhNodes_d);
+        s_bvhNodes_d = nullptr;
+    }
+    if (s_bvhPrimIndices_d) {
+        cudaFree(s_bvhPrimIndices_d);
+        s_bvhPrimIndices_d = nullptr;
+    }
+    s_bvhNodeCount = 0;
 }

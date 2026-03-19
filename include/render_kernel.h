@@ -14,14 +14,30 @@ struct Float4 {
     float x, y, z, w;
 };
 
-/// A single triangle defined by three screen-space 2-D positions.
-/// Positions are in normalised coordinates: x,y ∈ [-1, 1].
+/// A single triangle with positions and per-vertex normals.
 struct TriangleData {
-    Float3 v0, v1, v2;
+    Float3 v0, v1, v2;   // vertex positions
+    Float3 n0, n1, n2;   // vertex normals (for smooth shading)
 };
 
 // RGB color / radiance type.
 // (We keep using Float3 for convenience throughout the renderer.)
+
+/// Flat BVH node for GPU traversal.
+/// Layout mirrors FastBVH::Node<float> but without the FastBVH dependency on
+/// the device side.  Interior nodes have primCount == 0; leaves have primCount > 0.
+/// Traversal rules:
+///   - left  child = &nodes[i + 1]
+///   - right child = &nodes[i + rightOffset]
+///   - leaf triangles: primIndices[primStart .. primStart+primCount)
+struct LinearBVHNode {
+    float    bmin[3];       // AABB minimum corner
+    uint32_t primStart;     // first index into the BVH prim-index array
+    float    bmax[3];       // AABB maximum corner
+    uint32_t primCount;     // 0 = interior node, >0 = leaf
+    uint32_t rightOffset;   // 0 = leaf; else right child offset from this node
+    uint32_t pad[3];        // pad to 48 bytes (cache-line friendly)
+};
 
 /// Camera parameters for ray generation.
 /// For now the kernel doesn't yet use it, but the ray tracer will.
@@ -60,6 +76,12 @@ struct BsdfData {
 // ---------------------------------------------------------------------------
 // Host-side API  (implemented in render_kernel.cu)
 // ---------------------------------------------------------------------------
+
+/// Upload a pre-built flat BVH (nodes + reordered prim indices) to the GPU.
+/// Build the data on the CPU first with buildBVH() from bvh_builder.h, then
+/// pass the results here.  Call once after cudaInitScene.
+void cudaInitBVH(const LinearBVHNode* nodes, int nodeCount,
+                 const int* primIndices, int primCount);
 
 /// Upload a full (flattened) scene to the GPU.
 ///

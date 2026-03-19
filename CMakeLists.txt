@@ -59,6 +59,7 @@ add_executable(${PROJECT_NAME}
     src/main.cpp
     src/render_kernel.cu
     src/scene.cpp
+    src/bvh_builder.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE

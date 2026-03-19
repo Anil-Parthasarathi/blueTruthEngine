@@ -29,7 +29,7 @@
           material="red"
           scaleX="4" scaleY="4" scaleZ="4"
           rotY="15"
-          posX="0.0" posY="-0.05" posZ="0.60" 
+          posX="0.0" posY="-0.05" posZ="0.60" />
 
     <!-- Camera used for ray generation -->
     <camera
