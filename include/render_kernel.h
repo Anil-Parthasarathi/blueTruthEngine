@@ -6,14 +6,6 @@
 // Data types shared between host (C++) and device (CUDA)
 // ---------------------------------------------------------------------------
 
-struct PathState {
-    Ray        ray;
-    Float3     throughput;
-    Float3     accumulatedColor;
-    int        bounceCount;
-    uint32_t   pixelIndex;
-};
-
 struct Float3 {
     float x, y, z;
 };
@@ -71,8 +63,9 @@ struct EmitterData {
 
 /// Minimal BSDF plumbing. You will implement the behavior.
 enum BsdfType : int {
-    BSDF_Diffuse = 1,
+    BSDF_Diffuse    = 1,
     BSDF_Dielectric = 2,
+    BSDF_Mirror     = 3,
 };
 
 struct BsdfData {
@@ -137,6 +130,12 @@ void cudaInitBsdfs(const BsdfData* bsdfs, int bsdfCount,
 
 /// Register an OpenGL PBO with CUDA so the kernel can write into it.
 void cudaRegisterPBO(uint32_t pbo);
+
+/// Reset the temporal accumulation buffer and restart progressive rendering.
+/// Call whenever the scene or camera changes so stale samples are discarded.
+/// cudaRender() calls this automatically on the first frame or if the
+/// resolution changes, so explicit calls are only needed on scene/camera edits.
+void cudaResetAccumulation(int imageWidth, int imageHeight);
 
 /// Launch the render kernel.  The kernel writes RGBA8 pixels into the
 /// mapped PBO.  Call this every frame.

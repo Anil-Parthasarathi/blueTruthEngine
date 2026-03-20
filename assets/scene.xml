@@ -4,13 +4,15 @@
     <bsdf name="redDiffuse"   type="diffuse" albedoR="0.75" albedoG="0.15" albedoB="0.15" />
     <bsdf name="greenDiffuse" type="diffuse" albedoR="0.15" albedoG="0.75" albedoB="0.15" />
     <bsdf name="glass"        type="dielectric" intIOR="1.5" extIOR="1.0" />
+    <bsdf name="mirror"       type="mirror" />
 
     <!-- Materials reference a BSDF.
          Note: this engine currently requires an albedoTexture path; we reuse checkerboard.png. -->
     <material name="white"  albedoTexture="assets/checkerboard.png" bsdf="whiteDiffuse" />
     <material name="red"    albedoTexture="assets/checkerboard.png" bsdf="redDiffuse" />
     <material name="green"  albedoTexture="assets/checkerboard.png" bsdf="greenDiffuse" />
-    <material name="glassM" albedoTexture="assets/checkerboard.png" bsdf="glass" />
+    <material name="glassM"  albedoTexture="assets/checkerboard.png" bsdf="glass" />
+    <material name="mirrorM" albedoTexture="assets/checkerboard.png" bsdf="mirror" />
 
     <!-- Cornell box geometry (already positioned in OBJ files) -->
     <mesh filename="assets/walls.obj"     material="white" />
@@ -23,13 +25,14 @@
           isEmitter="true" radianceR="18" radianceG="18" radianceB="18" />
 
     <!-- Objects -->
-    <mesh filename="assets/sphere1.obj" material="glassM" />
-    <mesh filename="assets/sphere2.obj" material="white" />
+    <mesh filename="assets/sphere1.obj" material="mirrorM" />
+    <mesh filename="assets/sphere2.obj" material="glassM" 
+    posX="0.05" posY="-0.05" posZ="-0.20" />
     <mesh filename="assets/bunny.obj"
           material="red"
           scaleX="4" scaleY="4" scaleZ="4"
           rotY="15"
-          posX="0.0" posY="-0.05" posZ="0.60" />
+          posX="0.06" posY="0.37" posZ="-0.10" />
 
     <!-- Camera used for ray generation -->
     <camera

@@ -25,7 +25,16 @@
 #include <cstdlib>
 #include <cmath>
 
-static const int LIGHT_SAMPLES = 16;
+static constexpr int   LIGHT_SAMPLES = 60;
+static constexpr int   MAX_BOUNCES   = 20;
+
+struct PathState {
+    Ray      ray;
+    Float3   throughput;
+    Float3   accumulatedColor;
+    int      bounceCount;
+    uint32_t pixelIndex;
+};
 
 // ---------------------------------------------------------------------------
 //  Error-checking helpers
@@ -44,6 +53,16 @@ static const int LIGHT_SAMPLES = 16;
 //  CUDA-GL interop state
 // ---------------------------------------------------------------------------
 static cudaGraphicsResource* s_pboResource = nullptr;
+
+// ---------------------------------------------------------------------------
+//  Progressive accumulation state
+// ---------------------------------------------------------------------------
+// Stores the running per-pixel linear-space average across all frames.
+// Gamma correction is applied only when writing to the display PBO.
+static Float3*   s_accumBuffer_d  = nullptr;
+static int       s_accumWidth     = 0;
+static int       s_accumHeight    = 0;
+static uint32_t  s_frameIndex     = 0;  // number of samples already in the buffer
 
 // ---------------------------------------------------------------------------
 //  Device-side scene data (flattened)
@@ -102,11 +121,14 @@ __device__ float edgeFunction(float ax, float ay,
     return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
 }
 
-__device__ __forceinline__ Ray generatePrimaryRay(int px, int py, int width, int height)
+// jx, jy are sub-pixel offsets in [-0.5, 0.5] drawn from the per-frame RNG.
+// With temporal accumulation each frame sees a different jitter position,
+// giving both antialiasing and reduced variance as samples pile up.
+__device__ __forceinline__ Ray generatePrimaryRay(int px, int py, int width, int height,
+                                                   float jx, float jy)
 {
-    // Pixel center in NDC [-1,1]
-    const float fx = (static_cast<float>(px) + 0.5f) / static_cast<float>(width);
-    const float fy = (static_cast<float>(py) + 0.5f) / static_cast<float>(height);
+    const float fx = (static_cast<float>(px) + 0.5f + jx) / static_cast<float>(width);
+    const float fy = (static_cast<float>(py) + 0.5f + jy) / static_cast<float>(height);
     const float ndcX = 2.0f * fx - 1.0f;
     // Flip Y so the image isn't vertically inverted on display.
     const float ndcY = 2.0f * fy - 1.0f;
@@ -125,58 +147,29 @@ __device__ __forceinline__ Ray generatePrimaryRay(int px, int py, int width, int
     return ray;
 }
 
-__global__ void renderKernel(uint32_t* framebuffer,
-                              int width, int height,
-                              const TriangleData* triangles,
-                              int triangleCount,
-                              const Float3* materials,
-                              const int* triangleMaterialIds,
-                              int materialCount,
-                              const Float3* triangleEmission,
-                              const EmitterData* emitters, int emitterCount,
-                              const int* emitterTriIndices,
-                              const float* emitterTriCdf,
-                              const float* sceneEmitterCdf,
-                              const BsdfData* bsdfs,
-                              int bsdfCount,
-                              const int* triangleBsdfIds,
-                              const LinearBVHNode* bvhNodes,
-                              int bvhNodeCount,
-                              const int* bvhPrimIndices,
-                              uint32_t frameIndex)
-{
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= width || y >= height) return;
-
-    const uint32_t pixelIndex =
-        static_cast<uint32_t>(y) * static_cast<uint32_t>(width) + static_cast<uint32_t>(x);
-    RngState rng = makeRng(hashUint(pixelIndex ^ (frameIndex * 0x9e3779b9u)));
-
-    // Background
-    Float3 finalColor = {0.0f, 0.0f, 0.0f};
-
-    // Primary ray from camera
-    Ray primaryRay = generatePrimaryRay(x, y, width, height);
-
-    Intersection sceneIntersection;
-    if (sceneIntersect(primaryRay, triangles, triangleCount,
-                       bvhNodes, bvhNodeCount, bvhPrimIndices,
-                       1e-4f, 1e30f, sceneIntersection)) {
-        int matId = triangleMaterialIds ? triangleMaterialIds[sceneIntersection.triangleIndex] : 0;
-        if (matId < 0 || matId >= materialCount) matId = 0;
+// Direct illumination for a diffuse hit.
+// Writes into pathState.accumulatedColor (scaled by pathState.throughput).
+__device__ void handleDiffuse(
+    PathState&             rikudo,
+    const Intersection&    sceneIntersection,
+    const BsdfData&        bsdf,
+    RngState&              rng,
+    const TriangleData*    triangles,
+    const Float3*          triangleEmission,
+    const EmitterData*     emitters,       int emitterCount,
+    const int*             emitterTriIndices,
+    const float*           emitterTriCdf,
+    const float*           sceneEmitterCdf,
+    const LinearBVHNode*   bvhNodes,       int bvhNodeCount,
+    const int*             bvhPrimIndices){
 
         // If the hit triangle is emissive, show direct emission
         if (triangleEmission) {
             const Float3 e = triangleEmission[sceneIntersection.triangleIndex];
             if (e.x > 0.0f || e.y > 0.0f || e.z > 0.0f) {
-                finalColor = add3(finalColor, e);
+                rikudo.accumulatedColor = add3(rikudo.accumulatedColor, mul3(e, rikudo.throughput));
             }
         }
-
-        // Get the bsdf data for the hit triangle
-        int bsdfId = triangleBsdfIds[sceneIntersection.triangleIndex];
-        const BsdfData bsdf = bsdfs[bsdfId];
 
         Float3 directLight = {0.0f, 0.0f, 0.0f};
 
@@ -213,7 +206,7 @@ __global__ void renderKernel(uint32_t* framebuffer,
             float geo = cosSurface * cosLight / (distToLight * distToLight);
 
             BsdfQueryRecord bRec{};
-            bRec.wi = toLocalFromNormal(sceneIntersection.hitNormal, mul3(primaryRay.direction, -1.0f));
+            bRec.wi = toLocalFromNormal(sceneIntersection.hitNormal, mul3(rikudo.ray.direction, -1.0f));
             bRec.wo = toLocalFromNormal(sceneIntersection.hitNormal, directionToLight);
             bRec.measure = BSDF_ESolidAngle;
 
@@ -225,21 +218,125 @@ __global__ void renderKernel(uint32_t* framebuffer,
 
         }
 
-        // Average the direct lighting samples and add to final color.
-        // Emission (if any) was already added above and must NOT be averaged.
-        finalColor = add3(finalColor, div3(directLight, LIGHT_SAMPLES));
+        Float3 averageDirectLight = div3(directLight, LIGHT_SAMPLES);
+
+        rikudo.accumulatedColor = add3(rikudo.accumulatedColor, mul3(averageDirectLight, rikudo.throughput));
     }
 
-    // Apply gamma correction (linear → sRGB display transform, γ = 2.2).
-    finalColor.x = powf(fmaxf(0.0f, fminf(finalColor.x, 1.0f)), 1.0f / 2.2f);
-    finalColor.y = powf(fmaxf(0.0f, fminf(finalColor.y, 1.0f)), 1.0f / 2.2f);
-    finalColor.z = powf(fmaxf(0.0f, fminf(finalColor.z, 1.0f)), 1.0f / 2.2f);
+// Specular bounce for a dielectric/mirror hit.
+// Updates pathState.ray and pathState.throughput for the next bounce.
+// Never applies Russian roulette — delta BSDFs have deterministic throughput
+// so RR only adds variance (dark holes) without any benefit.
+__device__ bool handleSpecular(
+    PathState&             rikudo,
+    const Intersection&    sceneIntersection,
+    const BsdfData&        bsdf,
+    RngState&              rng){
 
-    uint8_t r = static_cast<uint8_t>(finalColor.x * 255.0f);
-    uint8_t g = static_cast<uint8_t>(finalColor.y * 255.0f);
-    uint8_t b = static_cast<uint8_t>(finalColor.z * 255.0f);
+        BsdfQueryRecord bRec{};
+        bRec.wi = toLocalFromNormal(sceneIntersection.hitNormal, mul3(rikudo.ray.direction, -1.0f));
+
+        Float3 sampleWeight = bsdfSample(bsdf, bRec, rngNextFloat01(rng), rngNextFloat01(rng));
+
+        Float3 newDir = normalize3(toWorldFromNormal(sceneIntersection.hitNormal, bRec.wo));
+
+        rikudo.ray.origin    = add3(sceneIntersection.hitPoint, mul3(newDir, 1e-4f));
+        rikudo.ray.direction = newDir;
+        rikudo.throughput    = mul3(rikudo.throughput, sampleWeight);
+        return true;
+    }
+
+__global__ void renderKernel(uint32_t* framebuffer,
+                              Float3*   accumBuffer,
+                              int width, int height,
+                              const TriangleData* triangles,
+                              int triangleCount,
+                              const Float3* materials,
+                              const int* triangleMaterialIds,
+                              int materialCount,
+                              const Float3* triangleEmission,
+                              const EmitterData* emitters, int emitterCount,
+                              const int* emitterTriIndices,
+                              const float* emitterTriCdf,
+                              const float* sceneEmitterCdf,
+                              const BsdfData* bsdfs,
+                              int bsdfCount,
+                              const int* triangleBsdfIds,
+                              const LinearBVHNode* bvhNodes,
+                              int bvhNodeCount,
+                              const int* bvhPrimIndices,
+                              uint32_t frameIndex)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    const uint32_t pixelIndex =
+        static_cast<uint32_t>(y) * static_cast<uint32_t>(width) + static_cast<uint32_t>(x);
+    RngState rng = makeRng(hashUint(pixelIndex ^ (frameIndex * 0x9e3779b9u)));
+
+    // Jitter within the pixel for antialiasing. Each frame lands on a
+    // different sub-pixel location; accumulation averages them out.
+    float jx = rngNextFloat01(rng) - 0.5f;
+    float jy = rngNextFloat01(rng) - 0.5f;
+
+    PathState rikudo;
+    rikudo.ray = generatePrimaryRay(x, y, width, height, jx, jy);
+    rikudo.throughput = {1.0f, 1.0f, 1.0f};
+    rikudo.accumulatedColor = {0.0f, 0.0f, 0.0f};
+    rikudo.bounceCount = 0;
+    rikudo.pixelIndex = pixelIndex;
+
+    while (rikudo.bounceCount < MAX_BOUNCES) {
+
+        Intersection sceneIntersection;
+        bool hitCheck = sceneIntersect(rikudo.ray, triangles, triangleCount,
+            bvhNodes, bvhNodeCount, bvhPrimIndices,
+            1e-4f, 1e30f, sceneIntersection);
+
+        if (!hitCheck) {
+            break;
+        }
+
+        int bsdfId = triangleBsdfIds[sceneIntersection.triangleIndex];
+        const BsdfData bsdf = bsdfs[bsdfId];
+
+        if (bsdf.type == BSDF_Diffuse) {
+            handleDiffuse(rikudo, sceneIntersection, bsdf, rng,
+                          triangles, triangleEmission,
+                          emitters, emitterCount,
+                          emitterTriIndices, emitterTriCdf, sceneEmitterCdf,
+                          bvhNodes, bvhNodeCount, bvhPrimIndices);
+            break;
+        } else if (bsdf.type == BSDF_Dielectric || bsdf.type == BSDF_Mirror) {
+            bool continues = handleSpecular(rikudo, sceneIntersection, bsdf, rng);
+            if (!continues) break;
+        }
+
+        rikudo.bounceCount++;
+    }
+
+    // Blend this sample into the running per-pixel average (linear space).
+    // Welford / streaming average: new_avg = old_avg + (sample - old_avg) / n
+    const float n = static_cast<float>(frameIndex + 1);
+    Float3 prev = accumBuffer[pixelIndex];
+    Float3 blended = {
+        prev.x + (rikudo.accumulatedColor.x - prev.x) / n,
+        prev.y + (rikudo.accumulatedColor.y - prev.y) / n,
+        prev.z + (rikudo.accumulatedColor.z - prev.z) / n
+    };
+    accumBuffer[pixelIndex] = blended;
+
+    // Gamma correction (linear → sRGB, γ = 2.2) applied to the accumulated
+    // average, not to the raw per-frame sample.
+    float dr = powf(fmaxf(0.0f, fminf(blended.x, 1.0f)), 1.0f / 2.2f);
+    float dg = powf(fmaxf(0.0f, fminf(blended.y, 1.0f)), 1.0f / 2.2f);
+    float db = powf(fmaxf(0.0f, fminf(blended.z, 1.0f)), 1.0f / 2.2f);
+
+    uint8_t r = static_cast<uint8_t>(dr * 255.0f);
+    uint8_t g = static_cast<uint8_t>(dg * 255.0f);
+    uint8_t b = static_cast<uint8_t>(db * 255.0f);
     uint8_t a = 255;
-
 
     // Pack RGBA into a uint32 (ABGR byte order for GL_UNSIGNED_BYTE / RGBA)
     uint32_t pixel = (a << 24) | (b << 16) | (g << 8) | r;
@@ -455,9 +552,31 @@ void cudaRegisterPBO(uint32_t pbo)
         cudaGraphicsMapFlagsWriteDiscard));
 }
 
+void cudaResetAccumulation(int imageWidth, int imageHeight)
+{
+    // Reallocate buffer if the resolution has changed.
+    if (s_accumBuffer_d && (s_accumWidth != imageWidth || s_accumHeight != imageHeight)) {
+        cudaFree(s_accumBuffer_d);
+        s_accumBuffer_d = nullptr;
+    }
+    if (!s_accumBuffer_d) {
+        s_accumWidth  = imageWidth;
+        s_accumHeight = imageHeight;
+        CUDA_CHECK(cudaMalloc(&s_accumBuffer_d,
+                              sizeof(Float3) * static_cast<size_t>(imageWidth * imageHeight)));
+    }
+    CUDA_CHECK(cudaMemset(s_accumBuffer_d, 0,
+                          sizeof(Float3) * static_cast<size_t>(imageWidth * imageHeight)));
+    s_frameIndex = 0;
+}
+
 void cudaRender(int imageWidth, int imageHeight)
 {
-    static uint32_t s_frameIndex = 0;
+    // Auto-initialise the accumulation buffer on the first call or if the
+    // resolution has changed (e.g. window resize).
+    if (!s_accumBuffer_d || s_accumWidth != imageWidth || s_accumHeight != imageHeight) {
+        cudaResetAccumulation(imageWidth, imageHeight);
+    }
 
     // Map the PBO so CUDA can write into it
     CUDA_CHECK(cudaGraphicsMapResources(1, &s_pboResource, 0));
@@ -472,7 +591,8 @@ void cudaRender(int imageWidth, int imageHeight)
     dim3 grid((imageWidth  + block.x - 1) / block.x,
               (imageHeight + block.y - 1) / block.y);
 
-    renderKernel<<<grid, block>>>(devPtr, imageWidth, imageHeight,
+    renderKernel<<<grid, block>>>(devPtr, s_accumBuffer_d,
+                                   imageWidth, imageHeight,
                                    s_triangles_d, s_triangleCount,
                                    s_materials_d,
                                    s_triangleMaterialIds_d,
@@ -498,6 +618,14 @@ void cudaCleanup()
     if (s_pboResource) {
         cudaGraphicsUnregisterResource(s_pboResource);
         s_pboResource = nullptr;
+    }
+
+    if (s_accumBuffer_d) {
+        cudaFree(s_accumBuffer_d);
+        s_accumBuffer_d = nullptr;
+        s_accumWidth    = 0;
+        s_accumHeight   = 0;
+        s_frameIndex    = 0;
     }
 
     if (s_triangles_d) {

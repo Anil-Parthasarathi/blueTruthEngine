@@ -33,12 +33,14 @@ __device__ __forceinline__ Float3 hadamard3(const Float3& a, const Float3& b)
 // ── Per-material implementations ─────────────────────────────────────
 #include "rt_bsdf_diffuse.cuh"
 #include "rt_bsdf_dielectric.cuh"
+#include "rt_bsdf_mirror.cuh"
 
 // ── Dispatchers ───────────────────────────────────────────────────────
 __device__ __forceinline__ Float3 bsdfEval(const BsdfData& b, const BsdfQueryRecord& rec)
 {
     if (b.type == BSDF_Diffuse)    return bsdfEvalDiffuse(b, rec);
     if (b.type == BSDF_Dielectric) return bsdfEvalDielectric(b, rec);
+    if (b.type == BSDF_Mirror)     return bsdfEvalMirror(b, rec);
     return {0.0f, 0.0f, 0.0f};
 }
 
@@ -46,6 +48,7 @@ __device__ __forceinline__ float bsdfPdf(const BsdfData& b, const BsdfQueryRecor
 {
     if (b.type == BSDF_Diffuse)    return bsdfPdfDiffuse(rec);
     if (b.type == BSDF_Dielectric) return bsdfPdfDielectric(rec);
+    if (b.type == BSDF_Mirror)     return bsdfPdfMirror(rec);
     return 0.0f;
 }
 
@@ -54,6 +57,7 @@ __device__ __forceinline__ Float3 bsdfSample(const BsdfData& b, BsdfQueryRecord&
 {
     if (b.type == BSDF_Diffuse)    return bsdfSampleDiffuse(b, rec, u1, u2, outPdf);
     if (b.type == BSDF_Dielectric) return bsdfSampleDielectric(b, rec, u1, u2, outPdf);
+    if (b.type == BSDF_Mirror)     return bsdfSampleMirror(b, rec, u1, u2, outPdf);
     if (outPdf) *outPdf = 0.0f;
     return {0.0f, 0.0f, 0.0f};
 }
@@ -61,5 +65,5 @@ __device__ __forceinline__ Float3 bsdfSample(const BsdfData& b, BsdfQueryRecord&
 // True for delta BSDFs (dirac reflection/refraction) — skip direct light sampling for these.
 __device__ __forceinline__ bool bsdfIsDelta(const BsdfData& b)
 {
-    return b.type == BSDF_Dielectric;
+    return b.type == BSDF_Dielectric || b.type == BSDF_Mirror;
 }

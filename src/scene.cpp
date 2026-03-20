@@ -125,10 +125,14 @@ SceneDescription loadSceneDescription(const std::string& path)
             } else if (b.type == "dielectric") {
                 readFOpt("intIOR", b.intIOR);
                 readFOpt("extIOR", b.extIOR);
+            } else if (b.type == "mirror") {
+                readFOpt("albedoR", b.albedoR);
+                readFOpt("albedoG", b.albedoG);
+                readFOpt("albedoB", b.albedoB);
             } else {
                 std::cerr << "[scene] <bsdf name=\"" << b.name
                           << "\"> unsupported type: \"" << b.type
-                          << "\" (expected diffuse|dielectric)\n";
+                          << "\" (expected diffuse|dielectric|mirror)\n";
                 std::exit(EXIT_FAILURE);
             }
 

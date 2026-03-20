@@ -38,8 +38,16 @@
 #include <fstream>
 #include <cmath>
 
-static int g_windowWidth  = 1280;
-static int g_windowHeight = 720;
+static int  g_windowWidth   = 1280;
+static int  g_windowHeight  = 720;
+
+// Set to true whenever the camera, geometry, or lighting changes so the
+// accumulation buffer is cleared before the next frame.  Wire this up to
+// any animation / camera-movement code you add in the future.
+static bool g_sceneChanged  = false;
+static int  g_accumSamples  = 0;   // samples accumulated since last reset
+
+inline void markSceneChanged() { g_sceneChanged = true; }
 
 // ── OpenGL objects ──────────────────────────────────────────────────
 static GLuint g_pbo     = 0;   // Pixel Buffer Object (CUDA writes here)
@@ -622,6 +630,11 @@ int main(int argc, char** argv)
         } else if (b.type == "dielectric") {
             d.type = BSDF_Dielectric;
             d.p1 = { b.intIOR, b.extIOR, 0.0f, 0.0f };
+        } else if (b.type == "mirror") {
+            d.type = BSDF_Mirror;
+            d.p0 = { b.albedoR > 0.0f ? b.albedoR : 1.0f,
+                     b.albedoG > 0.0f ? b.albedoG : 1.0f,
+                     b.albedoB > 0.0f ? b.albedoB : 1.0f, 0.0f };
         } else {
             std::cerr << "[bsdf] Unsupported bsdf type: " << b.type << "\n";
             std::exit(EXIT_FAILURE);
@@ -784,8 +797,17 @@ int main(int argc, char** argv)
     {
         glfwPollEvents();
 
+        // Reset accumulation if the scene/camera changed since the last frame.
+        // To trigger this from animation code, call markSceneChanged() anywhere.
+        if (g_sceneChanged) {
+            cudaResetAccumulation(g_windowWidth, g_windowHeight);
+            g_sceneChanged = false;
+            g_accumSamples = 0;
+        }
+
         // 1. CUDA renders into the PBO
         cudaRender(g_windowWidth, g_windowHeight);
+        ++g_accumSamples;
 
         // FPS counter — update window title once per second
         ++fpsFrameCount;
@@ -794,7 +816,9 @@ int main(int argc, char** argv)
         if (elapsed >= 1.0) {
             double fps = fpsFrameCount / elapsed;
             char title[128];
-            snprintf(title, sizeof(title), "RedTruthEngine  |  %.1f fps  |  %.2f ms", fps, 1000.0 / fps);
+            snprintf(title, sizeof(title),
+                     "RedTruthEngine  |  %.1f fps  |  %.2f ms  |  %d spp",
+                     fps, 1000.0 / fps, g_accumSamples);
             glfwSetWindowTitle(window, title);
             fpsLastTime   = now;
             fpsFrameCount = 0;
