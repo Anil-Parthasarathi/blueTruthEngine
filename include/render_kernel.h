@@ -66,6 +66,7 @@ enum BsdfType : int {
     BSDF_Diffuse    = 1,
     BSDF_Dielectric = 2,
     BSDF_Mirror     = 3,
+    BSDF_Microfacet = 4,
 };
 
 struct BsdfData {

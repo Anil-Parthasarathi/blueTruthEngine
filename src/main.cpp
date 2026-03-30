@@ -635,6 +635,11 @@ int main(int argc, char** argv)
             d.p0 = { b.albedoR > 0.0f ? b.albedoR : 1.0f,
                      b.albedoG > 0.0f ? b.albedoG : 1.0f,
                      b.albedoB > 0.0f ? b.albedoB : 1.0f, 0.0f };
+        } else if (b.type == "microfacet") {
+            d.type = BSDF_Microfacet;
+            const float ks = 1.0f - std::fmax(b.albedoR, std::fmax(b.albedoG, b.albedoB));
+            d.p0 = { b.albedoR, b.albedoG, b.albedoB, 0.0f };
+            d.p1 = { b.alpha, b.intIOR, b.extIOR, ks };
         } else {
             std::cerr << "[bsdf] Unsupported bsdf type: " << b.type << "\n";
             std::exit(EXIT_FAILURE);

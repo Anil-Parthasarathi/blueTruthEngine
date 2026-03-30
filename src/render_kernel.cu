@@ -25,8 +25,8 @@
 #include <cstdlib>
 #include <cmath>
 
-static constexpr int   LIGHT_SAMPLES = 60;
-static constexpr int   MAX_BOUNCES   = 20;
+static constexpr int   LIGHT_SAMPLES = 30;
+static constexpr int   MAX_BOUNCES   = 10;
 
 struct PathState {
     Ray      ray;
@@ -301,7 +301,7 @@ __global__ void renderKernel(uint32_t* framebuffer,
         int bsdfId = triangleBsdfIds[sceneIntersection.triangleIndex];
         const BsdfData bsdf = bsdfs[bsdfId];
 
-        if (bsdf.type == BSDF_Diffuse) {
+        if (bsdf.type == BSDF_Diffuse || bsdf.type == BSDF_Microfacet) {
             handleDiffuse(rikudo, sceneIntersection, bsdf, rng,
                           triangles, triangleEmission,
                           emitters, emitterCount,

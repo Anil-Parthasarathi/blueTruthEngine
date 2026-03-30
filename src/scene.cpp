@@ -129,10 +129,17 @@ SceneDescription loadSceneDescription(const std::string& path)
                 readFOpt("albedoR", b.albedoR);
                 readFOpt("albedoG", b.albedoG);
                 readFOpt("albedoB", b.albedoB);
+            } else if (b.type == "microfacet") {
+                readFOpt("albedoR", b.albedoR);
+                readFOpt("albedoG", b.albedoG);
+                readFOpt("albedoB", b.albedoB);
+                readFOpt("alpha", b.alpha);
+                readFOpt("intIOR", b.intIOR);
+                readFOpt("extIOR", b.extIOR);
             } else {
                 std::cerr << "[scene] <bsdf name=\"" << b.name
                           << "\"> unsupported type: \"" << b.type
-                          << "\" (expected diffuse|dielectric|mirror)\n";
+                          << "\" (expected diffuse|dielectric|mirror|microfacet)\n";
                 std::exit(EXIT_FAILURE);
             }
 

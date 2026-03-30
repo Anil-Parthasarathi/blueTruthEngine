@@ -34,6 +34,7 @@ __device__ __forceinline__ Float3 hadamard3(const Float3& a, const Float3& b)
 #include "rt_bsdf_diffuse.cuh"
 #include "rt_bsdf_dielectric.cuh"
 #include "rt_bsdf_mirror.cuh"
+#include "rt_bsdf_microfacet.cuh"
 
 // ── Dispatchers ───────────────────────────────────────────────────────
 __device__ __forceinline__ Float3 bsdfEval(const BsdfData& b, const BsdfQueryRecord& rec)
@@ -41,6 +42,7 @@ __device__ __forceinline__ Float3 bsdfEval(const BsdfData& b, const BsdfQueryRec
     if (b.type == BSDF_Diffuse)    return bsdfEvalDiffuse(b, rec);
     if (b.type == BSDF_Dielectric) return bsdfEvalDielectric(b, rec);
     if (b.type == BSDF_Mirror)     return bsdfEvalMirror(b, rec);
+    if (b.type == BSDF_Microfacet) return bsdfEvalMicrofacet(b, rec);
     return {0.0f, 0.0f, 0.0f};
 }
 
@@ -49,6 +51,7 @@ __device__ __forceinline__ float bsdfPdf(const BsdfData& b, const BsdfQueryRecor
     if (b.type == BSDF_Diffuse)    return bsdfPdfDiffuse(rec);
     if (b.type == BSDF_Dielectric) return bsdfPdfDielectric(rec);
     if (b.type == BSDF_Mirror)     return bsdfPdfMirror(rec);
+    if (b.type == BSDF_Microfacet) return bsdfPdfMicrofacet(b, rec);
     return 0.0f;
 }
 
@@ -58,6 +61,7 @@ __device__ __forceinline__ Float3 bsdfSample(const BsdfData& b, BsdfQueryRecord&
     if (b.type == BSDF_Diffuse)    return bsdfSampleDiffuse(b, rec, u1, u2, outPdf);
     if (b.type == BSDF_Dielectric) return bsdfSampleDielectric(b, rec, u1, u2, outPdf);
     if (b.type == BSDF_Mirror)     return bsdfSampleMirror(b, rec, u1, u2, outPdf);
+    if (b.type == BSDF_Microfacet) return bsdfSampleMicrofacet(b, rec, u1, u2, outPdf);
     if (outPdf) *outPdf = 0.0f;
     return {0.0f, 0.0f, 0.0f};
 }

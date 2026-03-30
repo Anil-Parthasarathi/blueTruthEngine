@@ -41,7 +41,7 @@ struct MaterialDesc {
 
 struct BsdfDesc {
     std::string name;
-    std::string type; // "diffuse" | "dielectric"
+    std::string type; // "diffuse" | "dielectric" | "mirror" | "microfacet"
 
     // Diffuse params
     float albedoR = 1.0f;
@@ -51,6 +51,9 @@ struct BsdfDesc {
     // Dielectric params
     float intIOR = 1.5f;
     float extIOR = 1.0f;
+
+    // Microfacet params
+    float alpha = 0.1f;
 };
 
 struct EmitterDesc {

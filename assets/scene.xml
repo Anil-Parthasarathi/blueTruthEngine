@@ -5,6 +5,7 @@
     <bsdf name="greenDiffuse" type="diffuse" albedoR="0.15" albedoG="0.75" albedoB="0.15" />
     <bsdf name="glass"        type="dielectric" intIOR="1.5" extIOR="1.0" />
     <bsdf name="mirror"       type="mirror" />
+    <bsdf name="microfacetBunny" type="microfacet" albedoR="0.75" albedoG="0.15" albedoB="0.15" alpha="0.28" intIOR="1.5046" extIOR="1.000277" />
 
     <!-- Materials reference a BSDF.
          Note: this engine currently requires an albedoTexture path; we reuse checkerboard.png. -->
@@ -13,6 +14,7 @@
     <material name="green"  albedoTexture="assets/checkerboard.png" bsdf="greenDiffuse" />
     <material name="glassM"  albedoTexture="assets/checkerboard.png" bsdf="glass" />
     <material name="mirrorM" albedoTexture="assets/checkerboard.png" bsdf="mirror" />
+    <material name="microfacetBunnyM" albedoTexture="assets/checkerboard.png" bsdf="microfacetBunny" />
 
     <!-- Cornell box geometry (already positioned in OBJ files) -->
     <mesh filename="assets/walls.obj"     material="white" />
@@ -29,7 +31,7 @@
     <mesh filename="assets/sphere2.obj" material="glassM" 
     posX="0.05" posY="-0.05" posZ="-0.20" />
     <mesh filename="assets/bunny.obj"
-          material="red"
+          material="microfacetBunnyM"
           scaleX="4" scaleY="4" scaleZ="4"
           rotY="15"
           posX="0.06" posY="0.37" posZ="-0.10" />
