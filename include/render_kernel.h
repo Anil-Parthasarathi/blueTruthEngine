@@ -107,6 +107,10 @@ void cudaInitCamera(const CameraData& camera);
 /// Non-emissive triangles should have (0,0,0).
 void cudaInitTriangleEmission(const Float3* triangleEmission, int triangleCount);
 
+/// Per-triangle flag: non-zero iff the triangle belongs to a mesh marked emissive in the scene
+/// (Nori-style `Mesh::isEmitter()`), independent of radiance magnitude.
+void cudaInitTriangleEmitterFlags(const uint8_t* flags, int triangleCount);
+
 /// Upload area-light sampling data (for mesh emitters).
 /// - `emissiveTriangleIndices`: indices into the scene triangle array
 /// - `emissiveTriangleCdf`: length = emissiveTriangleCount+1, cdf[0]=0, cdf[N]=totalArea

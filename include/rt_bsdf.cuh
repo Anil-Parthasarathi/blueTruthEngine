@@ -71,3 +71,9 @@ __device__ __forceinline__ bool bsdfIsDelta(const BsdfData& b)
 {
     return b.type == BSDF_Dielectric || b.type == BSDF_Mirror;
 }
+
+// Nori-like: non-delta BSDFs that participate in NEE / MIS (diffuse + microfacet).
+__device__ __forceinline__ bool bsdfIsDiffuse(const BsdfData& b)
+{
+    return b.type == BSDF_Diffuse || b.type == BSDF_Microfacet;
+}

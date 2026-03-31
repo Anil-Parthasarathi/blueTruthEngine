@@ -92,7 +92,7 @@ __device__ __forceinline__ Float3 bsdfSampleDielectric(const BsdfData& bsdf,
             -indexRatio * bRec.wi.y + diaScale * normal.y,
             -indexRatio * bRec.wi.z + diaScale * normal.z
         };
-        bRec.eta = indexRatio;
+        bRec.eta = 1.0f / indexRatio;
 
         // dielectricResult = Color3f(indexRatio * indexRatio)
         float w = indexRatio * indexRatio;

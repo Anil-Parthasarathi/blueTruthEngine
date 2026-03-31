@@ -24,16 +24,30 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <cstdint>
 
-static constexpr int   LIGHT_SAMPLES = 30;
-static constexpr int   MAX_BOUNCES   = 10;
+static constexpr int   SAMPLES_PER_PIXEL = 5;
+static constexpr int   MAX_BOUNCES   = 200;
+static constexpr float RT_EPSILON    = 1e-4f;
 
 struct PathState {
     Ray      ray;
     Float3   throughput;
     Float3   accumulatedColor;
     int      bounceCount;
+    float    eta;
+    float brdfPDF;
+    bool specularBounce;
     uint32_t pixelIndex;
+};
+
+struct DirectLightingContext {
+    const uint8_t* triangleEmitterFlags;
+    const Float3* triangleEmission;
+    const LinearBVHNode* bvhNodes;
+    int bvhNodeCount;
+    const int* bvhPrimIndices;
+    EmitterSamplingData emitterSampling;
 };
 
 // ---------------------------------------------------------------------------
@@ -78,6 +92,8 @@ __constant__ CameraData d_camera;
 
 // Per-triangle emission (same length as s_triangles_d). Non-emissive = (0,0,0).
 static Float3* s_triangleEmission_d = nullptr;
+// Per-triangle: 1 = triangle belongs to an emissive mesh (scene mesh isEmitter).
+static uint8_t* s_triangleEmitterFlags_d = nullptr;
 
 // Global mesh-emitter sampling data (union of all emissive triangles for now).
 static int*   s_emissiveTriIndices_d = nullptr;
@@ -147,104 +163,187 @@ __device__ __forceinline__ Ray generatePrimaryRay(int px, int py, int width, int
     return ray;
 }
 
-// Direct illumination for a diffuse hit.
-// Writes into pathState.accumulatedColor (scaled by pathState.throughput).
-__device__ void handleDiffuse(
-    PathState&             rikudo,
-    const Intersection&    sceneIntersection,
-    const BsdfData&        bsdf,
-    RngState&              rng,
-    const TriangleData*    triangles,
-    const Float3*          triangleEmission,
-    const EmitterData*     emitters,       int emitterCount,
-    const int*             emitterTriIndices,
-    const float*           emitterTriCdf,
-    const float*           sceneEmitterCdf,
-    const LinearBVHNode*   bvhNodes,       int bvhNodeCount,
-    const int*             bvhPrimIndices){
+__device__ __forceinline__ float convertAreaPDFtoSolidAnglePDF(
+    const float lightPDFArea,
+    const EmitterQueryRecord& emitterQuery)
+{
+    // Converting from area to solid angle is area pdf * distance^2 /
+    // abs(cos(theta))
+    const Float3 diff = sub3(emitterQuery.hitPoint, emitterQuery.originPoint);
+    const float dist2 = dot3(diff, diff);
+    const Float3 negLightDir = {-emitterQuery.directionToLight.x,
+                                -emitterQuery.directionToLight.y,
+                                -emitterQuery.directionToLight.z};
+    const float denom = fmaxf(fabsf(dot3(emitterQuery.hitNormal, negLightDir)), 1e-3f);
+    return lightPDFArea * dist2 / denom;
+}
 
-        // If the hit triangle is emissive, show direct emission
-        if (triangleEmission) {
-            const Float3 e = triangleEmission[sceneIntersection.triangleIndex];
-            if (e.x > 0.0f || e.y > 0.0f || e.z > 0.0f) {
-                rikudo.accumulatedColor = add3(rikudo.accumulatedColor, mul3(e, rikudo.throughput));
-            }
-        }
-
-        Float3 directLight = {0.0f, 0.0f, 0.0f};
-
-        for (int i = 0; i < LIGHT_SAMPLES; i++) {
-            float uLight0 = rngNextFloat01(rng);
-            float uLight1 = rngNextFloat01(rng);
-
-            RandomEmitterSample chosenEmitter = sampleRandomEmitter(
-                triangles,
-                emitters, emitterCount,
-                emitterTriIndices,
-                emitterTriCdf,
-                sceneEmitterCdf,
-                uLight0, uLight1);
-
-            float distToLight = distance3(sceneIntersection.hitPoint, chosenEmitter.mesh.position);
-            Float3 directionToLight = div3(sub3(chosenEmitter.mesh.position, sceneIntersection.hitPoint), distToLight);
-
-            Float3 le = emitters[chosenEmitter.emitterIndex].radiance;
-            
-            // Cast shadow ray to check if the light is visible
-            Ray shadowRay;
-            shadowRay.origin = sceneIntersection.hitPoint;
-            shadowRay.direction = directionToLight;
-
-            if (sceneIntersectAnyHit(shadowRay, triangles,
-                                     bvhNodes, bvhNodeCount, bvhPrimIndices,
-                                     1e-4f, distToLight - 1e-3f)) {
-                continue;
-            }
-
-            float cosSurface = fmaxf(0.0f, dot3(sceneIntersection.hitNormal, directionToLight));
-            float cosLight   = fmaxf(0.0f, dot3(chosenEmitter.mesh.normal, mul3(directionToLight, -1.0f)));
-            float geo = cosSurface * cosLight / (distToLight * distToLight);
-
-            BsdfQueryRecord bRec{};
-            bRec.wi = toLocalFromNormal(sceneIntersection.hitNormal, mul3(rikudo.ray.direction, -1.0f));
-            bRec.wo = toLocalFromNormal(sceneIntersection.hitNormal, directionToLight);
-            bRec.measure = BSDF_ESolidAngle;
-
-            Float3 fr = bsdfEval(bsdf, bRec);
-
-            Float3 sampleColor = div3(mul3(le, mul3(fr, geo)), chosenEmitter.mesh.pdf * chosenEmitter.emitterPdf);
-
-            directLight = add3(directLight, sampleColor);
-
-        }
-
-        Float3 averageDirectLight = div3(directLight, LIGHT_SAMPLES);
-
-        rikudo.accumulatedColor = add3(rikudo.accumulatedColor, mul3(averageDirectLight, rikudo.throughput));
+__device__ bool traceRay(
+    PathState& pathRecord,
+    RngState& rng,
+    const DirectLightingContext& lightingCtx,
+    const BsdfData* bsdfs,
+    const int* triangleBsdfIds,
+    int triangleCount)
+{
+    Intersection its{};
+    if (!sceneIntersect(pathRecord.ray, lightingCtx.emitterSampling.triangles, triangleCount,
+                         lightingCtx.bvhNodes, lightingCtx.bvhNodeCount, lightingCtx.bvhPrimIndices,
+                         RT_EPSILON, 1e30f, its)) {
+        return false;
     }
 
-// Specular bounce for a dielectric/mirror hit.
-// Updates pathState.ray and pathState.throughput for the next bounce.
-// Never applies Russian roulette — delta BSDFs have deterministic throughput
-// so RR only adds variance (dark holes) without any benefit.
-__device__ bool handleSpecular(
-    PathState&             rikudo,
-    const Intersection&    sceneIntersection,
-    const BsdfData&        bsdf,
-    RngState&              rng){
+    const int bsdfId = triangleBsdfIds[its.triangleIndex];
+    const BsdfData bsdf = bsdfs[bsdfId];
 
-        BsdfQueryRecord bRec{};
-        bRec.wi = toLocalFromNormal(sceneIntersection.hitNormal, mul3(rikudo.ray.direction, -1.0f));
+    // Check if hit an emitter
+    if (lightingCtx.triangleEmitterFlags[its.triangleIndex] != 0) {
+        const Float3 surfaceRadiance =
+            lightingCtx.triangleEmission[its.triangleIndex];
 
-        Float3 sampleWeight = bsdfSample(bsdf, bRec, rngNextFloat01(rng), rngNextFloat01(rng));
+        {
+            EmitterQueryRecord directEmitterQuery{};
+            directEmitterQuery.originPoint = pathRecord.ray.origin;
+            directEmitterQuery.hitPoint    = its.hitPoint;
+            directEmitterQuery.hitNormal   = its.hitNormal;
+            directEmitterQuery.directionToLight = pathRecord.ray.direction;
 
-        Float3 newDir = normalize3(toWorldFromNormal(sceneIntersection.hitNormal, bRec.wo));
+            float brdfWeight = 1.0f;
 
-        rikudo.ray.origin    = add3(sceneIntersection.hitPoint, mul3(newDir, 1e-4f));
-        rikudo.ray.direction = newDir;
-        rikudo.throughput    = mul3(rikudo.throughput, sampleWeight);
-        return true;
+            if (!pathRecord.specularBounce) {
+                const int emitterIdx = findEmitterIndexForTriangle(
+                    its.triangleIndex,
+                    lightingCtx.emitterSampling.emitters,
+                    lightingCtx.emitterSampling.emitterCount,
+                    lightingCtx.emitterSampling.emitterTriIndices);
+
+                if (emitterIdx >= 0) {
+                    const float lightPDFAreaBRDF =
+                        emitterProbabilityEvaluatorFromMesh(
+                            lightingCtx.emitterSampling.emitters[emitterIdx]) *
+                        sceneGetEmitterPDF(emitterIdx,
+                                             lightingCtx.emitterSampling.sceneEmitterCdf,
+                                             lightingCtx.emitterSampling.emitterCount);
+
+                    const float lightPDFSolidAngleBRDF =
+                        convertAreaPDFtoSolidAnglePDF(lightPDFAreaBRDF, directEmitterQuery);
+
+                    const float weightDenomSumBRDF =
+                        pathRecord.brdfPDF + lightPDFSolidAngleBRDF;
+
+                    if (weightDenomSumBRDF <= 0.0f) {
+                        brdfWeight = 0.0f;
+                    } else {
+                        brdfWeight = pathRecord.brdfPDF / weightDenomSumBRDF;
+                    }
+                }
+            }
+
+            const Float3 rad =
+                checkRadiance(surfaceRadiance, directEmitterQuery);
+
+            pathRecord.accumulatedColor = add3(
+                pathRecord.accumulatedColor,
+                mul3(mul3(rad, pathRecord.throughput), brdfWeight));
+        }
     }
+
+    if (bsdfIsDiffuse(bsdf)) {
+        pathRecord.specularBounce = false;
+
+        const float uLight0 = rngNextFloat01(rng);
+        const float uLight1 = rngNextFloat01(rng);
+
+        EmitterQueryRecord emitterQuery{};
+        emitterQuery.originPoint = its.hitPoint;
+
+        Float3 le = sampleGenerator(lightingCtx.emitterSampling, emitterQuery, uLight0, uLight1);
+
+        if ((le.x <= 0.0f && le.y <= 0.0f && le.z <= 0.0f) ||
+            emitterQuery.emitterPdf <= 0.0f ||
+            probabilityEvaluator(emitterQuery) <= 0.0f) {
+            le = {0.0f, 0.0f, 0.0f};
+        } else {
+        const float distToLight =
+            distance3(emitterQuery.hitPoint, its.hitPoint);
+
+        Ray shadowRay{};
+        shadowRay.origin    = its.hitPoint;
+        shadowRay.direction = emitterQuery.directionToLight;
+
+        if (sceneIntersectAnyHit(shadowRay, lightingCtx.emitterSampling.triangles,
+                                 lightingCtx.bvhNodes, lightingCtx.bvhNodeCount,
+                                 lightingCtx.bvhPrimIndices,
+                                 RT_EPSILON, distToLight - RT_EPSILON)) {
+            le = {0.0f, 0.0f, 0.0f};
+        } else {
+            const float geo =
+                fabsf(dot3(its.hitNormal, emitterQuery.directionToLight)) *
+                fabsf(dot3(emitterQuery.hitNormal,
+                           mul3(emitterQuery.directionToLight, -1.0f))) /
+                (distToLight * distToLight);
+
+            BsdfQueryRecord bsdfQueryDirect{};
+            bsdfQueryDirect.wi =
+                toLocalFromNormal(its.hitNormal, mul3(pathRecord.ray.direction, -1.0f));
+            bsdfQueryDirect.wo =
+                toLocalFromNormal(its.hitNormal, emitterQuery.directionToLight);
+            bsdfQueryDirect.measure = BSDF_ESolidAngle;
+
+            Float3 fr = bsdfEval(bsdf, bsdfQueryDirect);
+
+            const float lightPDFareaDirect =
+                emitterQuery.emitterPdf * emitterQuery.pdf;
+
+            const float lightPDFSolidAngleDirect =
+                convertAreaPDFtoSolidAnglePDF(lightPDFareaDirect, emitterQuery);
+
+            const float brdfPDFDirect = bsdfPdf(bsdf, bsdfQueryDirect);
+
+            const float weightDenomSumDirect =
+                brdfPDFDirect + lightPDFSolidAngleDirect;
+
+            if (weightDenomSumDirect <= 0.0f) {
+                le = {0.0f, 0.0f, 0.0f};
+            } else {
+                const float lightWeight =
+                    lightPDFSolidAngleDirect / weightDenomSumDirect;
+
+                Float3 tmp = mul3(fr, le);
+                tmp = mul3(tmp, lightWeight);
+                tmp = mul3(tmp, geo);
+                le = div3(tmp, lightPDFareaDirect);
+            }
+        }
+        }
+
+        pathRecord.accumulatedColor =
+            add3(pathRecord.accumulatedColor, mul3(le, pathRecord.throughput));
+    } else {
+        pathRecord.specularBounce = true;
+    }
+
+    BsdfQueryRecord bsdfQueryIndirect{};
+    bsdfQueryIndirect.wi =
+        toLocalFromNormal(its.hitNormal, mul3(pathRecord.ray.direction, -1.0f));
+
+    const float u0 = rngNextFloat01(rng);
+    const float u1 = rngNextFloat01(rng);
+    Float3 sampleWeight = bsdfSample(bsdf, bsdfQueryIndirect, u0, u1);
+
+    pathRecord.brdfPDF = bsdfPdf(bsdf, bsdfQueryIndirect);
+
+    const Float3 bounceDir =
+        normalize3(toWorldFromNormal(its.hitNormal, bsdfQueryIndirect.wo));
+
+    pathRecord.ray.origin =
+        add3(its.hitPoint, mul3(bounceDir, RT_EPSILON));
+    pathRecord.ray.direction = bounceDir;
+    pathRecord.throughput    = mul3(pathRecord.throughput, sampleWeight);
+    pathRecord.eta *= bsdfQueryIndirect.eta;
+
+    return true;
+}
 
 __global__ void renderKernel(uint32_t* framebuffer,
                               Float3*   accumBuffer,
@@ -254,6 +353,7 @@ __global__ void renderKernel(uint32_t* framebuffer,
                               const Float3* materials,
                               const int* triangleMaterialIds,
                               int materialCount,
+                              const uint8_t* triangleEmitterFlags,
                               const Float3* triangleEmission,
                               const EmitterData* emitters, int emitterCount,
                               const int* emitterTriIndices,
@@ -271,59 +371,76 @@ __global__ void renderKernel(uint32_t* framebuffer,
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
 
+    DirectLightingContext lightingCtx{};
+    lightingCtx.triangleEmitterFlags = triangleEmitterFlags;
+    lightingCtx.triangleEmission = triangleEmission;
+    lightingCtx.bvhNodes = bvhNodes;
+    lightingCtx.bvhNodeCount = bvhNodeCount;
+    lightingCtx.bvhPrimIndices = bvhPrimIndices;
+    lightingCtx.emitterSampling = {
+        triangles,
+        emitters, emitterCount,
+        emitterTriIndices,
+        emitterTriCdf,
+        sceneEmitterCdf
+    };
+
     const uint32_t pixelIndex =
         static_cast<uint32_t>(y) * static_cast<uint32_t>(width) + static_cast<uint32_t>(x);
     RngState rng = makeRng(hashUint(pixelIndex ^ (frameIndex * 0x9e3779b9u)));
 
-    // Jitter within the pixel for antialiasing. Each frame lands on a
-    // different sub-pixel location; accumulation averages them out.
-    float jx = rngNextFloat01(rng) - 0.5f;
-    float jy = rngNextFloat01(rng) - 0.5f;
+    Float3 finalColor = {0.0f, 0.0f, 0.0f};
 
-    PathState rikudo;
-    rikudo.ray = generatePrimaryRay(x, y, width, height, jx, jy);
-    rikudo.throughput = {1.0f, 1.0f, 1.0f};
-    rikudo.accumulatedColor = {0.0f, 0.0f, 0.0f};
-    rikudo.bounceCount = 0;
-    rikudo.pixelIndex = pixelIndex;
+    for (int i = 0; i < SAMPLES_PER_PIXEL; i++) {
 
-    while (rikudo.bounceCount < MAX_BOUNCES) {
+        // Sub-pixel jitter: draw fresh offsets per path so SAMPLES_PER_PIXEL paths differ.
+        const float jx = rngNextFloat01(rng) - 0.5f;
+        const float jy = rngNextFloat01(rng) - 0.5f;
 
-        Intersection sceneIntersection;
-        bool hitCheck = sceneIntersect(rikudo.ray, triangles, triangleCount,
-            bvhNodes, bvhNodeCount, bvhPrimIndices,
-            1e-4f, 1e30f, sceneIntersection);
+        PathState rikudo;
+        rikudo.ray = generatePrimaryRay(x, y, width, height, jx, jy);
+        rikudo.throughput = {1.0f, 1.0f, 1.0f};
+        rikudo.accumulatedColor = {0.0f, 0.0f, 0.0f};
+        rikudo.bounceCount = 0;
+        rikudo.pixelIndex = pixelIndex;
+        rikudo.eta = 1.0f;
+        rikudo.brdfPDF = 0.0f;
+        rikudo.specularBounce = true;
 
-        if (!hitCheck) {
-            break;
+        while (rikudo.bounceCount < MAX_BOUNCES) {
+
+            if (!traceRay(rikudo, rng, lightingCtx, bsdfs, triangleBsdfIds,
+                        triangleCount)) {
+                break;
+            }
+
+            if (rikudo.bounceCount > 3) {
+                const float continuationProb = fminf(
+                    maxCoeff3(rikudo.throughput) * rikudo.eta * rikudo.eta,
+                    0.99f);
+
+                if (rngNextFloat01(rng) >= continuationProb) {
+                    break;
+                }
+                rikudo.throughput = div3(rikudo.throughput, continuationProb);
+            }
+            rikudo.bounceCount++;
         }
 
-        int bsdfId = triangleBsdfIds[sceneIntersection.triangleIndex];
-        const BsdfData bsdf = bsdfs[bsdfId];
+        finalColor = add3(finalColor, rikudo.accumulatedColor);
 
-        if (bsdf.type == BSDF_Diffuse || bsdf.type == BSDF_Microfacet) {
-            handleDiffuse(rikudo, sceneIntersection, bsdf, rng,
-                          triangles, triangleEmission,
-                          emitters, emitterCount,
-                          emitterTriIndices, emitterTriCdf, sceneEmitterCdf,
-                          bvhNodes, bvhNodeCount, bvhPrimIndices);
-            break;
-        } else if (bsdf.type == BSDF_Dielectric || bsdf.type == BSDF_Mirror) {
-            bool continues = handleSpecular(rikudo, sceneIntersection, bsdf, rng);
-            if (!continues) break;
-        }
-
-        rikudo.bounceCount++;
     }
+
+    finalColor = div3(finalColor, static_cast<float>(SAMPLES_PER_PIXEL));
 
     // Blend this sample into the running per-pixel average (linear space).
     // Welford / streaming average: new_avg = old_avg + (sample - old_avg) / n
     const float n = static_cast<float>(frameIndex + 1);
     Float3 prev = accumBuffer[pixelIndex];
     Float3 blended = {
-        prev.x + (rikudo.accumulatedColor.x - prev.x) / n,
-        prev.y + (rikudo.accumulatedColor.y - prev.y) / n,
-        prev.z + (rikudo.accumulatedColor.z - prev.z) / n
+        prev.x + (finalColor.x - prev.x) / n,
+        prev.y + (finalColor.y - prev.y) / n,
+        prev.z + (finalColor.z - prev.z) / n
     };
     accumBuffer[pixelIndex] = blended;
 
@@ -419,6 +536,22 @@ void cudaInitTriangleEmission(const Float3* triangleEmission, int triangleCount)
                           sizeof(Float3) * static_cast<size_t>(triangleCount)));
     CUDA_CHECK(cudaMemcpy(s_triangleEmission_d, triangleEmission,
                           sizeof(Float3) * static_cast<size_t>(triangleCount),
+                          cudaMemcpyHostToDevice));
+}
+
+void cudaInitTriangleEmitterFlags(const uint8_t* flags, int triangleCount)
+{
+    if (s_triangleEmitterFlags_d) {
+        cudaFree(s_triangleEmitterFlags_d);
+        s_triangleEmitterFlags_d = nullptr;
+    }
+
+    if (!flags || triangleCount <= 0) return;
+
+    CUDA_CHECK(cudaMalloc(&s_triangleEmitterFlags_d,
+                          sizeof(uint8_t) * static_cast<size_t>(triangleCount)));
+    CUDA_CHECK(cudaMemcpy(s_triangleEmitterFlags_d, flags,
+                          sizeof(uint8_t) * static_cast<size_t>(triangleCount),
                           cudaMemcpyHostToDevice));
 }
 
@@ -597,6 +730,7 @@ void cudaRender(int imageWidth, int imageHeight)
                                    s_materials_d,
                                    s_triangleMaterialIds_d,
                                    s_materialCount,
+                                   s_triangleEmitterFlags_d,
                                    s_triangleEmission_d,
                                    s_emitters_d, s_emitterCount,
                                    s_emitterTriIndices_d,
@@ -646,6 +780,11 @@ void cudaCleanup()
     if (s_triangleEmission_d) {
         cudaFree(s_triangleEmission_d);
         s_triangleEmission_d = nullptr;
+    }
+
+    if (s_triangleEmitterFlags_d) {
+        cudaFree(s_triangleEmitterFlags_d);
+        s_triangleEmitterFlags_d = nullptr;
     }
 
     if (s_emissiveTriIndices_d) {

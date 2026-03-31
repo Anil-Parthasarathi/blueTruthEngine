@@ -64,6 +64,11 @@ __device__ __forceinline__ float distance3(const Float3& a, const Float3& b)
     return length3(sub3(a, b));
 }
 
+__device__ __forceinline__ float maxCoeff3(const Float3& v)
+{
+    return fmaxf(v.x, fmaxf(v.y, v.z));
+}
+
 // ---------------------------------------------------------------------------
 // Local shading frame helpers (+Z aligns with the provided normal)
 // ---------------------------------------------------------------------------

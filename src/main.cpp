@@ -652,10 +652,12 @@ int main(int argc, char** argv)
     std::vector<int> triangleMaterialIds;
     std::vector<int> triangleBsdfIds;
     std::vector<Float3> triangleEmission;
+    std::vector<uint8_t> triangleEmitterFlags;
     triangles.reserve(1024);
     triangleMaterialIds.reserve(1024);
     triangleBsdfIds.reserve(1024);
     triangleEmission.reserve(1024);
+    triangleEmitterFlags.reserve(1024);
 
     // Global mesh-emitter sampling (union of all emissive triangles for now)
     std::vector<int> emissiveTriangleIndices;
@@ -671,6 +673,7 @@ int main(int argc, char** argv)
     sceneEmitterCdf.push_back(0.0f);
     float sceneEmitterWeightSum = 0.0f;
 
+    // Per-triangle emitter flag: set from scene mesh isEmitter (Nori-style).
     for (const auto& mesh : scene.meshes) {
         const int matId = materialIndexOf(mesh.materialName);
         if (matId < 0) {
@@ -710,6 +713,7 @@ int main(int argc, char** argv)
             triangles.push_back(t);
             triangleMaterialIds.push_back(matId);
             triangleBsdfIds.push_back(bsdfId);
+            triangleEmitterFlags.push_back(mesh.isEmitter ? static_cast<uint8_t>(1) : static_cast<uint8_t>(0));
 
             if (mesh.isEmitter) {
                 triangleEmission.push_back(emitColor);
@@ -766,6 +770,8 @@ int main(int argc, char** argv)
 
     cudaInitTriangleEmission(triangleEmission.data(),
                              static_cast<int>(triangleEmission.size()));
+    cudaInitTriangleEmitterFlags(triangleEmitterFlags.data(),
+                                 static_cast<int>(triangleEmitterFlags.size()));
 
     if (!emissiveTriangleIndices.empty()) {
         cudaInitEmitters(emissiveTriangleIndices.data(),
