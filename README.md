@@ -1,10 +1,11 @@
-# RedTruthEngine
-
-<img width="1024" height="576" alt="image" src="https://github.com/user-attachments/assets/f6de240f-c542-4e27-adfa-085d2b8f8df1" />
+# Red Truth Engine
 
 A CUDA + OpenGL rendering engine. CUDA writes pixels into a Pixel Buffer Object; OpenGL displays it as a fullscreen quad.
 
 Aiming to create a fully loaded path tracer with support for neural rendering and cool physical simulation features!
+
+<img width="1280" height="720" alt="anilRenderWhiteFloor" src="https://github.com/user-attachments/assets/c96d0eff-54d5-48fb-8ef2-fbcf77a7a775" />
+
 
 ## Requirements
 
