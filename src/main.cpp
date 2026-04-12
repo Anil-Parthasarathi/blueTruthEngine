@@ -523,7 +523,7 @@ int main(int argc, char** argv)
 {
     // ── Scene description (Nori-style) ─────────────────────────────────
     const std::string scenePath =
-        (argc > 1) ? argv[1] : std::string("assets/scene.xml");
+        (argc > 1) ? argv[1] : std::string("assets/scene_anil_linkedin_cover.xml");
     SceneDescription scene = loadSceneDescription(scenePath);
     g_windowWidth  = scene.windowWidth;
     g_windowHeight = scene.windowHeight;

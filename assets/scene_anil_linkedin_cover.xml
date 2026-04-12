@@ -1,0 +1,177 @@
+<scene>
+    <!-- LinkedIn-style banner: 1080p (so bunny mesh is less obvious); name lowered; crop to ~1584x396. -->
+    <bsdf name="whiteDiffuse"     type="diffuse" albedoR="0.75" albedoG="0.75" albedoB="0.75" />
+    <bsdf name="orangeDiffuse"    type="diffuse" albedoR="0.90" albedoG="0.45" albedoB="0.05" />
+    <bsdf name="limeGreenDiffuse" type="diffuse" albedoR="0.50" albedoG="0.85" albedoB="0.10" />
+    <bsdf name="reflectiveWallBSDF" type="microfacet" albedoR="0.07" albedoG="0.07" albedoB="0.075" alpha="0.00065" intIOR="1.58" extIOR="1.0" />
+    <bsdf name="glass"  type="dielectric" intIOR="1.5" extIOR="1.0" />
+    <bsdf name="mirror" type="mirror" />
+    <bsdf name="microfacetBunny" type="microfacet" albedoR="0.75" albedoG="0.15" albedoB="0.15" alpha="0.28" intIOR="1.5046" extIOR="1.000277" />
+    <bsdf name="silverShiny" type="microfacet" albedoR="0.78" albedoG="0.80" albedoB="0.84" alpha="0.012" intIOR="2.42" extIOR="1.0" />
+
+    <!-- "Anil" letter spheres only: monochrome microfacets (varied alpha / intIOR) -->
+    <bsdf name="crawl1" type="microfacet" albedoR="0.95" albedoG="0.95" albedoB="0.97" alpha="0.006" intIOR="2.65" extIOR="1.0" />
+    <bsdf name="crawl2" type="microfacet" albedoR="0.88" albedoG="0.88" albedoB="0.90" alpha="0.038" intIOR="1.72" extIOR="1.0" />
+    <bsdf name="crawl3" type="microfacet" albedoR="0.92" albedoG="0.92" albedoB="0.94" alpha="0.11" intIOR="1.38" extIOR="1.0" />
+    <bsdf name="crawl4" type="microfacet" albedoR="0.14" albedoG="0.14" albedoB="0.16" alpha="0.028" intIOR="2.45" extIOR="1.0" />
+    <bsdf name="crawl5" type="microfacet" albedoR="0.03" albedoG="0.03" albedoB="0.035" alpha="0.075" intIOR="1.58" extIOR="1.0" />
+    <bsdf name="crawl6" type="microfacet" albedoR="0.74" albedoG="0.75" albedoB="0.78" alpha="0.016" intIOR="2.08" extIOR="1.0" />
+    <bsdf name="crawl7" type="microfacet" albedoR="0.52" albedoG="0.53" albedoB="0.55" alpha="0.09" intIOR="1.92" extIOR="1.0" />
+    <bsdf name="crawl8" type="microfacet" albedoR="0.84" albedoG="0.83" albedoB="0.86" alpha="0.20" intIOR="1.48" extIOR="1.0" />
+
+    <material name="white"          albedoTexture="assets/checkerboard.png" bsdf="whiteDiffuse" />
+    <material name="reflectiveWall" albedoTexture="assets/checkerboard.png" bsdf="reflectiveWallBSDF" />
+    <material name="orangeWall"     albedoTexture="assets/checkerboard.png" bsdf="orangeDiffuse" />
+    <material name="limeGreenWall"  albedoTexture="assets/checkerboard.png" bsdf="limeGreenDiffuse" />
+    <material name="glassM"         albedoTexture="assets/checkerboard.png" bsdf="glass" />
+    <material name="sphereSilverM" albedoTexture="assets/checkerboard.png" bsdf="silverShiny" />
+    <material name="microfacetBunnyM" albedoTexture="assets/checkerboard.png" bsdf="microfacetBunny" />
+    <material name="mat_crawl1" albedoTexture="assets/checkerboard.png" bsdf="crawl1" />
+    <material name="mat_crawl2" albedoTexture="assets/checkerboard.png" bsdf="crawl2" />
+    <material name="mat_crawl3" albedoTexture="assets/checkerboard.png" bsdf="crawl3" />
+    <material name="mat_crawl4" albedoTexture="assets/checkerboard.png" bsdf="crawl4" />
+    <material name="mat_crawl5" albedoTexture="assets/checkerboard.png" bsdf="crawl5" />
+    <material name="mat_crawl6" albedoTexture="assets/checkerboard.png" bsdf="crawl6" />
+    <material name="mat_crawl7" albedoTexture="assets/checkerboard.png" bsdf="crawl7" />
+    <material name="mat_crawl8" albedoTexture="assets/checkerboard.png" bsdf="crawl8" />
+
+    <mesh filename="assets/floor.obj"     material="white" />
+    <mesh filename="assets/walls.obj"     material="reflectiveWall" />
+    <mesh filename="assets/leftwall.obj"  material="orangeWall" />
+    <mesh filename="assets/rightwall.obj" material="limeGreenWall" />
+    <mesh filename="assets/light.obj"     material="white" isEmitter="true" radianceR="18" radianceG="18" radianceB="18" />
+
+    <mesh filename="assets/sphere1.obj" material="sphereSilverM" posX="-0.15" posY="0.00" posZ="-0.50" />
+    <mesh filename="assets/sphere2.obj" material="glassM"  posX="0.20"  posY="0.00" posZ="-0.80" />
+
+    <mesh filename="assets/bunny.obj" material="microfacetBunnyM" scaleX="4" scaleY="4" scaleZ="4" rotY="15" posX="0.00" posY="-0.15" posZ="0.20" />
+
+    <!-- ANIL: sphere positions pre-tilted −45° about X through text center (crawl: top recedes), then lifted (+Y) and brought toward camera (+Z) -->
+
+    <!-- === A === splayed legs, bold crossbar -->
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.523" posY="0.740" posZ="-0.085" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.523" posY="0.704" posZ="-0.048" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.523" posY="0.667" posZ="-0.011" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.480" posY="0.887" posZ="-0.232" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.480" posY="0.851" posZ="-0.195" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.480" posY="0.814" posZ="-0.158" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.480" posY="0.777" posZ="-0.122" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.480" posY="0.740" posZ="-0.085" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.480" posY="0.704" posZ="-0.048" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.480" posY="0.667" posZ="-0.011" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.437" posY="0.961" posZ="-0.305" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.437" posY="0.924" posZ="-0.269" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.437" posY="0.887" posZ="-0.232" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.437" posY="0.851" posZ="-0.195" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.437" posY="0.814" posZ="-0.158" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.437" posY="0.777" posZ="-0.122" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.394" posY="0.961" posZ="-0.305" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.394" posY="0.924" posZ="-0.269" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.394" posY="0.887" posZ="-0.232" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.394" posY="0.851" posZ="-0.195" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.394" posY="0.814" posZ="-0.158" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.394" posY="0.777" posZ="-0.122" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.351" posY="0.887" posZ="-0.232" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.351" posY="0.851" posZ="-0.195" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.351" posY="0.814" posZ="-0.158" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.351" posY="0.777" posZ="-0.122" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.351" posY="0.740" posZ="-0.085" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.351" posY="0.704" posZ="-0.048" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.351" posY="0.667" posZ="-0.011" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.308" posY="0.740" posZ="-0.085" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.308" posY="0.704" posZ="-0.048" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.308" posY="0.667" posZ="-0.011" />
+
+    <!-- === N === thick verticals + bold diagonal -->
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.246" posY="0.863" posZ="-0.208" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.246" posY="0.826" posZ="-0.170" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.246" posY="0.790" posZ="-0.134" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.246" posY="0.752" posZ="-0.097" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.246" posY="0.716" posZ="-0.061" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.246" posY="0.679" posZ="-0.024" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.246" posY="0.643" posZ="0.013" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.246" posY="0.606" posZ="0.050" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.203" posY="0.863" posZ="-0.208" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.203" posY="0.826" posZ="-0.170" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.203" posY="0.790" posZ="-0.134" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.160" posY="0.826" posZ="-0.170" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.160" posY="0.790" posZ="-0.134" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.160" posY="0.752" posZ="-0.097" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.117" posY="0.752" posZ="-0.097" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.117" posY="0.716" posZ="-0.061" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.074" posY="0.716" posZ="-0.061" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.074" posY="0.679" posZ="-0.024" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.074" posY="0.643" posZ="0.013" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.031" posY="0.863" posZ="-0.208" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.031" posY="0.826" posZ="-0.170" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.031" posY="0.790" posZ="-0.134" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.031" posY="0.752" posZ="-0.097" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.031" posY="0.716" posZ="-0.061" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.031" posY="0.679" posZ="-0.024" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.031" posY="0.643" posZ="0.013" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="-0.031" posY="0.606" posZ="0.050" />
+
+    <!-- === I === wide double serifs, thick stem -->
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.031" posY="0.765" posZ="-0.110" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.031" posY="0.728" posZ="-0.073" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.031" posY="0.544" posZ="0.111" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.031" posY="0.508" posZ="0.148" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.074" posY="0.765" posZ="-0.110" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.074" posY="0.728" posZ="-0.073" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.074" posY="0.544" posZ="0.111" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.074" posY="0.508" posZ="0.148" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.117" posY="0.765" posZ="-0.110" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.117" posY="0.728" posZ="-0.073" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.117" posY="0.692" posZ="-0.036" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.117" posY="0.655" posZ="0.001" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.117" posY="0.618" posZ="0.038" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.117" posY="0.581" posZ="0.074" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.117" posY="0.544" posZ="0.111" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.117" posY="0.508" posZ="0.148" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.160" posY="0.765" posZ="-0.110" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.160" posY="0.728" posZ="-0.073" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.160" posY="0.692" posZ="-0.036" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.160" posY="0.655" posZ="0.001" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.160" posY="0.618" posZ="0.038" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.160" posY="0.581" posZ="0.074" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.160" posY="0.544" posZ="0.111" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.160" posY="0.508" posZ="0.148" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.203" posY="0.765" posZ="-0.110" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.203" posY="0.728" posZ="-0.073" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.203" posY="0.544" posZ="0.111" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.203" posY="0.508" posZ="0.148" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.246" posY="0.765" posZ="-0.110" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.246" posY="0.728" posZ="-0.073" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.246" posY="0.544" posZ="0.111" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.246" posY="0.508" posZ="0.148" />
+
+    <!-- === L === thick double vertical, wide dramatic foot with uptick -->
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.308" posY="0.667" posZ="-0.011" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.308" posY="0.630" posZ="0.026" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.308" posY="0.594" posZ="0.062" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.308" posY="0.556" posZ="0.099" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.308" posY="0.520" posZ="0.135" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.308" posY="0.483" posZ="0.173" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.308" posY="0.446" posZ="0.209" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.308" posY="0.410" posZ="0.245" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.351" posY="0.667" posZ="-0.011" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.351" posY="0.630" posZ="0.026" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.351" posY="0.594" posZ="0.062" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.351" posY="0.556" posZ="0.099" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.351" posY="0.520" posZ="0.135" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.351" posY="0.483" posZ="0.173" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.351" posY="0.446" posZ="0.209" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.351" posY="0.410" posZ="0.245" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.394" posY="0.446" posZ="0.209" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl5"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.394" posY="0.410" posZ="0.245" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl6"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.437" posY="0.446" posZ="0.209" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl7"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.437" posY="0.410" posZ="0.245" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl8"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.480" posY="0.446" posZ="0.209" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl1"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.480" posY="0.410" posZ="0.245" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl2"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.523" posY="0.483" posZ="0.173" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl3"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.523" posY="0.446" posZ="0.209" />
+    <mesh filename="assets/sphere1.obj" material="mat_crawl4"  scaleX="0.032" scaleY="0.032" scaleZ="0.032" posX="0.523" posY="0.410" posZ="0.245" />
+
+    <camera eyeX="0.0" eyeY="0.72" eyeZ="2.7" lookAtX="0.0" lookAtY="0.62" lookAtZ="-0.2" upX="0" upY="1" upZ="0" fovY="40" />
+    <window width="1920" height="1080" />
+</scene>

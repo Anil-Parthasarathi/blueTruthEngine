@@ -28,14 +28,16 @@
           isEmitter="true" radianceR="18" radianceG="18" radianceB="18" />
 
     <!-- Objects -->
-    <mesh filename="assets/sphere1.obj" material="mirrorM" />
+    <mesh filename="assets/sphere1.obj" material="mirrorM" 
+    posX="-0.1" posY="0.0" posZ="0.0"
+    />
     <mesh filename="assets/sphere2.obj" material="glassM" 
-    posX="0.05" posY="-0.05" posZ="-0.20" />
+    posX="0.1" posY="0.15" posZ="-0.50" />
     <mesh filename="assets/bunny.obj"
           material="microfacetBunnyM"
           scaleX="4" scaleY="4" scaleZ="4"
           rotY="15"
-          posX="0.06" posY="0.37" posZ="-0.10" />
+          posX="0.00" posY="-0.15" posZ="0.20" />
 
     <!-- Camera used for ray generation -->
     <camera
