@@ -379,6 +379,32 @@ static std::vector<TriangleData> loadTrianglesFromObj(
                  attrib.normals[3 * normalIndex + 2] };
     };
 
+    // Returns UV texture coordinates from the OBJ texcoord table.
+    auto getUV = [&](int texcoordIndex) -> Float2 {
+        if (texcoordIndex < 0 || attrib.texcoords.empty()) return {0.0f, 0.0f};
+        return { attrib.texcoords[2 * texcoordIndex + 0],
+                 attrib.texcoords[2 * texcoordIndex + 1] };
+    };
+
+    // Detect degenerate UV layout: if the OBJ defines ≤ 1 unique UV vertex
+    // (a common artefact of simple OBJ exports), every face gets the same
+    // texcoord and the texture tiles nowhere.  In that case we fall back to
+    // world-space planar projection so textures actually appear.
+    // Scale controls how many times the texture tiles per world unit.
+    const bool hasRealUVs = (attrib.texcoords.size() > 2); // > 1 unique UV
+    static constexpr float kUVTileScale = 1.0f;
+
+    // World-space planar UV: project the vertex onto the two axes that are
+    // most perpendicular to the dominant normal component.
+    auto planarUV = [](const Float3& pos, const Float3& n) -> Float2 {
+        const float ax = std::fabs(n.x);
+        const float ay = std::fabs(n.y);
+        const float az = std::fabs(n.z);
+        if (ay >= ax && ay >= az) return { pos.x * kUVTileScale, pos.z * kUVTileScale };
+        if (ax >= ay && ax >= az) return { pos.y * kUVTileScale, pos.z * kUVTileScale };
+        return { pos.x * kUVTileScale, pos.y * kUVTileScale };
+    };
+
     for (const auto& shape : shapes) {
         const auto& idx = shape.mesh.indices;
         if (idx.size() < 3) continue;
@@ -424,6 +450,18 @@ static std::vector<TriangleData> loadTrianglesFromObj(
                 t.n0 = t.n1 = t.n2 = gn;
             }
 
+            if (hasRealUVs) {
+                t.uv0 = getUV(i0.texcoord_index);
+                t.uv1 = getUV(i1.texcoord_index);
+                t.uv2 = getUV(i2.texcoord_index);
+            } else {
+                // Use the geometric normal (already computed in t.n0) to pick
+                // the projection plane, then project each vertex into UV space.
+                t.uv0 = planarUV(t.v0, t.n0);
+                t.uv1 = planarUV(t.v1, t.n0);
+                t.uv2 = planarUV(t.v2, t.n0);
+            }
+
             tris.push_back(t);
         }
     }
@@ -444,11 +482,13 @@ static std::vector<TriangleData> loadTrianglesFromObj(
 
 static Float3 loadTextureAverage(const std::string& path)
 {
+    if (path.empty()) return {1.0f, 1.0f, 1.0f};
+
     int w, h, channels;
     unsigned char* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
     if (!data) {
-        std::cerr << "Failed to load texture: " << path << '\n';
-        std::exit(EXIT_FAILURE);
+        std::cerr << "[tex]  Failed to load \"" << path << "\" — using white fallback\n";
+        return {1.0f, 1.0f, 1.0f};
     }
 
     // Compute the average colour across all pixels (using GLM for accumulation)
@@ -473,6 +513,39 @@ static Float3 loadTextureAverage(const std::string& path)
               << color.x << ", " << color.y << ", " << color.z << ")\n";
 
     return color;
+}
+
+/// Load a texture image as raw RGBA8 pixels (4 bytes per pixel, row-major).
+/// Returns a 1×1 white fallback if path is empty or loading fails.
+/// The caller owns the returned data and should free it with stbi_image_free()
+/// only if `ownedByStb` is true; for the fallback the data lives in the
+/// returned vector.
+struct ImageRGBA {
+    std::vector<uint8_t> pixels;   // RGBA8, width*height*4 bytes
+    int width  = 1;
+    int height = 1;
+};
+
+static ImageRGBA loadImageRGBA(const std::string& path)
+{
+    ImageRGBA img;
+    // Empty path → no texture.  Caller passes nullptr to cudaInitTextures so
+    // the engine leaves the material's BSDF base_color untouched.
+    if (path.empty()) return img;
+
+    int channels;
+    unsigned char* data = stbi_load(path.c_str(), &img.width, &img.height, &channels, 4);
+    if (!data) {
+        std::cerr << "[texture] Failed to load \"" << path << "\" — material will use BSDF colour\n";
+        return img;  // pixels remains empty → treated as no texture
+    }
+
+    img.pixels.assign(data, data + img.width * img.height * 4);
+    stbi_image_free(data);
+
+    std::cout << "[texture] Loaded \"" << path << "\" ("
+              << img.width << "×" << img.height << ")\n";
+    return img;
 }
 
 static float triangleAreaHost(const TriangleData& t)
@@ -600,6 +673,31 @@ int main(int argc, char** argv)
     materials.reserve(scene.materials.size());
     for (const auto& m : scene.materials) {
         materials.push_back(loadTextureAverage(m.albedoTexture));
+    }
+
+    // Load per-material textures as full RGBA images and upload to the GPU.
+    // Each entry aligns with scene.materials[i]; materials with no albedoTexture
+    // get an implicit 1×1 white fallback (texture modulation has no visible effect).
+    {
+        std::vector<ImageRGBA> texImages;
+        texImages.reserve(scene.materials.size());
+        for (const auto& m : scene.materials)
+            texImages.push_back(loadImageRGBA(m.albedoTexture));
+
+        std::vector<const uint8_t*> ptrs;
+        std::vector<int>            widths, heights;
+        ptrs.reserve(texImages.size());
+        widths.reserve(texImages.size());
+        heights.reserve(texImages.size());
+        for (const auto& img : texImages) {
+            // Empty pixels means no texture for this material — pass nullptr
+            // so cudaInitTextures leaves the texture object handle as 0.
+            ptrs.push_back(img.pixels.empty() ? nullptr : img.pixels.data());
+            widths.push_back(img.width);
+            heights.push_back(img.height);
+        }
+        cudaInitTextures(ptrs.data(), widths.data(), heights.data(),
+                         static_cast<int>(texImages.size()));
     }
 
     auto materialIndexOf = [&](const std::string& name) -> int {

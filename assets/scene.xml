@@ -28,16 +28,18 @@
           eta="1.5" />
 
     <!-- Materials reference a BSDF.
-         Note: this engine currently requires an albedoTexture path; we reuse checkerboard.png. -->
-    <material name="white"        albedoTexture="assets/checkerboard.png" bsdf="whiteDiffuse" />
-    <material name="red"          albedoTexture="assets/checkerboard.png" bsdf="redDiffuse" />
-    <material name="green"        albedoTexture="assets/checkerboard.png" bsdf="greenDiffuse" />
-    <material name="pinkDiamondM" albedoTexture="assets/checkerboard.png" bsdf="blueDiamond" />
-    <material name="goldM"        albedoTexture="assets/checkerboard.png" bsdf="gold" />
-    <material name="silverM"      albedoTexture="assets/checkerboard.png" bsdf="silver" />
+         albedoTexture is optional — omit it (or leave empty) for untextured materials;
+         the engine will use the BSDF base_color / albedo parameters directly. -->
+    <material name="white"        bsdf="whiteDiffuse" />
+    <material name="floor"        albedoTexture="assets/checkerboard.png" bsdf="whiteDiffuse" />
+    <material name="red"          bsdf="redDiffuse" />
+    <material name="green"        bsdf="greenDiffuse" />
+    <material name="pinkDiamondM" bsdf="blueDiamond" />
+    <material name="goldM"        bsdf="gold" />
+    <material name="silverM"      bsdf="silver" />
 
     <!-- Cornell box geometry (already positioned in OBJ files) -->
-    <mesh filename="assets/floor.obj"     material="white" />
+    <mesh filename="assets/floor.obj"     material="floor" />
     <mesh filename="assets/walls.obj"     material="white" />
     <mesh filename="assets/leftwall.obj"  material="red" />
     <mesh filename="assets/rightwall.obj" material="green" />

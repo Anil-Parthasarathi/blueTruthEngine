@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 static constexpr int   SAMPLES_PER_PIXEL = 5;
 static constexpr int   MAX_BOUNCES   = 200;
@@ -50,6 +51,11 @@ struct DirectLightingContext {
     EmitterSamplingData emitterSampling;
     const SpotlightData* spotlights;
     int spotlightCount;
+    // Texture sampling: array of CUDA texture object handles (one per material),
+    // and the per-triangle material index for lookup.
+    const cudaTextureObject_t* texObjects;
+    const int* triangleMaterialIds;
+    int textureCount;
 };
 
 // ---------------------------------------------------------------------------
@@ -122,6 +128,13 @@ static int*           s_bvhPrimIndices_d = nullptr; // reordered triangle indice
 // Spotlight point lights (handled separately from mesh emitters)
 static SpotlightData* s_spotlights_d    = nullptr;
 static int            s_spotlightCount  = 0;
+
+// Per-material CUDA texture objects — one per scene material, indexed by triangleMaterialIds.
+// Host-side arrays are kept for cleanup; the device array holds the opaque handles.
+static std::vector<cudaArray_t>         s_cuArrays;        // pixel data on device (host handles)
+static std::vector<cudaTextureObject_t> s_texObjects_h;    // texture object handles (host copy)
+static cudaTextureObject_t*             s_texObjects_d = nullptr; // device array of handles
+static int                              s_textureCount = 0;
 
 // ---------------------------------------------------------------------------
 //  Render kernel
@@ -397,7 +410,29 @@ __device__ bool traceRay(
     }
 
     const int bsdfId = triangleBsdfIds[its.triangleIndex];
-    const BsdfData bsdf = bsdfs[bsdfId];
+    BsdfData bsdf = bsdfs[bsdfId];
+
+    // Texture sampling
+    if (lightingCtx.texObjects != nullptr && lightingCtx.triangleMaterialIds != nullptr) {
+        const int matId = lightingCtx.triangleMaterialIds[its.triangleIndex];
+        if (matId >= 0 && matId < lightingCtx.textureCount) {
+            const cudaTextureObject_t texObj = lightingCtx.texObjects[matId];
+            if (texObj != 0) {
+                // tex2D returns normalised float4 in [0,1] (readMode = NormalizedFloat).
+                // We use the values as-is (no gamma decode) so that textures and
+                // XML albedo/base_color parameters live in the same convention.
+                const float4 s = tex2D<float4>(texObj, its.uv.x, its.uv.y);
+                bsdf.p0.x = s.x;
+                bsdf.p0.y = s.y;
+                bsdf.p0.z = s.z;
+                // Microfacet derives ks = 1 - max(kd) from the albedo.
+                // Recompute after texture override to stay energy-conserving.
+                if (bsdf.type == BSDF_Microfacet) {
+                    bsdf.p1.w = 1.0f - fmaxf(bsdf.p0.x, fmaxf(bsdf.p0.y, bsdf.p0.z));
+                }
+            }
+        }
+    }
 
     // Check if hit an emitter
     if (lightingCtx.triangleEmitterFlags[its.triangleIndex] != 0) {
@@ -458,6 +493,8 @@ __global__ void renderKernel(uint32_t* framebuffer,
                               const int* bvhPrimIndices,
                               const SpotlightData* spotlights,
                               int spotlightCount,
+                              const cudaTextureObject_t* texObjects,
+                              int textureCount,
                               uint32_t frameIndex)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -477,8 +514,11 @@ __global__ void renderKernel(uint32_t* framebuffer,
         emitterTriCdf,
         sceneEmitterCdf
     };
-    lightingCtx.spotlights     = spotlights;
-    lightingCtx.spotlightCount = spotlightCount;
+    lightingCtx.spotlights          = spotlights;
+    lightingCtx.spotlightCount      = spotlightCount;
+    lightingCtx.texObjects          = texObjects;
+    lightingCtx.triangleMaterialIds = triangleMaterialIds;
+    lightingCtx.textureCount        = textureCount;
 
     const uint32_t pixelIndex =
         static_cast<uint32_t>(y) * static_cast<uint32_t>(width) + static_cast<uint32_t>(x);
@@ -791,6 +831,79 @@ void cudaInitSpotlights(const SpotlightData* spotlights, int spotlightCount)
                           cudaMemcpyHostToDevice));
 }
 
+void cudaInitTextures(const uint8_t* const* pixels,
+                      const int* widths,
+                      const int* heights,
+                      int textureCount)
+{
+    // Release any previously uploaded textures.
+    for (auto& texObj : s_texObjects_h) if (texObj) cudaDestroyTextureObject(texObj);
+    for (auto& arr : s_cuArrays)        if (arr)    cudaFreeArray(arr);
+    s_texObjects_h.clear();
+    s_cuArrays.clear();
+    if (s_texObjects_d) { cudaFree(s_texObjects_d); s_texObjects_d = nullptr; }
+    s_textureCount = 0;
+
+    if (!pixels || textureCount <= 0) return;
+
+    s_cuArrays.resize(static_cast<size_t>(textureCount), nullptr);
+    s_texObjects_h.resize(static_cast<size_t>(textureCount), 0);
+
+    for (int i = 0; i < textureCount; ++i) {
+        // nullptr means this material has no texture — leave the handle as 0.
+        // The kernel checks texObj != 0 before sampling, so the BSDF's own
+        // base_color / albedo parameters are used unchanged.
+        if (!pixels[i]) {
+            s_cuArrays[static_cast<size_t>(i)]     = nullptr;
+            s_texObjects_h[static_cast<size_t>(i)] = 0;
+            continue;
+        }
+
+        const uint8_t* srcPixels = pixels[i];
+        const int w = widths[i];
+        const int h = heights[i];
+
+        // Allocate a 2-D CUDA array (RGBA8 per texel).
+        const cudaChannelFormatDesc desc = cudaCreateChannelDesc<uchar4>();
+        CUDA_CHECK(cudaMallocArray(&s_cuArrays[static_cast<size_t>(i)], &desc,
+                                   static_cast<size_t>(w), static_cast<size_t>(h)));
+
+        // Copy host pixels into the CUDA array (row-major, 4 bytes per pixel).
+        CUDA_CHECK(cudaMemcpy2DToArray(
+            s_cuArrays[static_cast<size_t>(i)], 0, 0,
+            srcPixels, static_cast<size_t>(w) * 4,
+            static_cast<size_t>(w) * 4, static_cast<size_t>(h),
+            cudaMemcpyHostToDevice));
+
+        // Create a texture object with bilinear filtering, UV wrap, normalised coords.
+        // readMode = NormalizedFloat converts uchar4 → float4 in [0,1] automatically.
+        cudaResourceDesc resDesc{};
+        resDesc.resType         = cudaResourceTypeArray;
+        resDesc.res.array.array = s_cuArrays[static_cast<size_t>(i)];
+
+        cudaTextureDesc texDesc{};
+        texDesc.addressMode[0]   = cudaAddressModeWrap;
+        texDesc.addressMode[1]   = cudaAddressModeWrap;
+        texDesc.filterMode       = cudaFilterModeLinear;
+        texDesc.readMode         = cudaReadModeNormalizedFloat;
+        texDesc.normalizedCoords = 1;
+
+        CUDA_CHECK(cudaCreateTextureObject(
+            &s_texObjects_h[static_cast<size_t>(i)], &resDesc, &texDesc, nullptr));
+
+        fprintf(stdout, "[texture] Uploaded material %d: %d×%d\n", i, w, h);
+    }
+
+    s_textureCount = textureCount;
+
+    // Copy the array of texture-object handles to the device so the kernel can index them.
+    CUDA_CHECK(cudaMalloc(&s_texObjects_d,
+                          sizeof(cudaTextureObject_t) * static_cast<size_t>(textureCount)));
+    CUDA_CHECK(cudaMemcpy(s_texObjects_d, s_texObjects_h.data(),
+                          sizeof(cudaTextureObject_t) * static_cast<size_t>(textureCount),
+                          cudaMemcpyHostToDevice));
+}
+
 void cudaRegisterPBO(uint32_t pbo)
 {
     CUDA_CHECK(cudaGraphicsGLRegisterBuffer(
@@ -854,6 +967,7 @@ void cudaRender(int imageWidth, int imageHeight)
                                    s_bvhNodes_d, s_bvhNodeCount,
                                    s_bvhPrimIndices_d,
                                    s_spotlights_d, s_spotlightCount,
+                                   s_texObjects_d, s_textureCount,
                                    s_frameIndex++);
     CUDA_CHECK(cudaGetLastError());
 
@@ -954,4 +1068,11 @@ void cudaCleanup()
         s_spotlights_d = nullptr;
     }
     s_spotlightCount = 0;
+
+    for (auto& texObj : s_texObjects_h) if (texObj) cudaDestroyTextureObject(texObj);
+    for (auto& arr : s_cuArrays)        if (arr)    cudaFreeArray(arr);
+    s_texObjects_h.clear();
+    s_cuArrays.clear();
+    if (s_texObjects_d) { cudaFree(s_texObjects_d); s_texObjects_d = nullptr; }
+    s_textureCount = 0;
 }

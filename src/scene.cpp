@@ -181,11 +181,8 @@ SceneDescription loadSceneDescription(const std::string& path)
                              "`name` in \"" << path << "\".\n";
                 std::exit(EXIT_FAILURE);
             }
-            if (mat.albedoTexture.empty()) {
-                std::cerr << "[scene] <material> \"" << mat.name
-                          << "\" missing required attribute `albedoTexture`.\n";
-                std::exit(EXIT_FAILURE);
-            }
+            // albedoTexture is optional — empty means no texture; the BSDF
+            // base_color / albedo parameters drive the colour instead.
             if (mat.bsdfName.empty()) {
                 std::cerr << "[scene] <material> \"" << mat.name
                           << "\" missing required attribute `bsdf`.\n";

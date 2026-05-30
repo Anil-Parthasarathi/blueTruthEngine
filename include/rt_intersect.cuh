@@ -6,10 +6,11 @@
 #include <cmath>
 
 struct Intersection {
-    Float3 hitPoint = {0.0f, 0.0f, 0.0f};
+    Float3 hitPoint  = {0.0f, 0.0f, 0.0f};
     Float3 hitNormal = {0.0f, 0.0f, 0.0f};
-    float t = -1.0f;
-    int triangleIndex = -1;
+    Float2 uv        = {0.0f, 0.0f};  // barycentrically interpolated texture coordinate
+    float  t         = -1.0f;
+    int    triangleIndex = -1;
 };
 
 struct Ray {
@@ -179,6 +180,12 @@ __device__ __forceinline__ bool sceneIntersect(
                     w0 * tri.n0.y + u * tri.n1.y + v * tri.n2.y,
                     w0 * tri.n0.z + u * tri.n1.z + v * tri.n2.z
                 });
+
+                // Interpolate texture coordinates.
+                out.uv = {
+                    w0 * tri.uv0.x + u * tri.uv1.x + v * tri.uv2.x,
+                    w0 * tri.uv0.y + u * tri.uv1.y + v * tri.uv2.y
+                };
             }
         } else {
             // Interior — push right child first so left is popped first

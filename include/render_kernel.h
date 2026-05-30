@@ -6,6 +6,10 @@
 // Data types shared between host (C++) and device (CUDA)
 // ---------------------------------------------------------------------------
 
+struct Float2 {
+    float x, y;
+};
+
 struct Float3 {
     float x, y, z;
 };
@@ -14,10 +18,11 @@ struct Float4 {
     float x, y, z, w;
 };
 
-/// A single triangle with positions and per-vertex normals.
+/// A single triangle with positions, per-vertex normals, and texture coordinates.
 struct TriangleData {
     Float3 v0, v1, v2;   // vertex positions
     Float3 n0, n1, n2;   // vertex normals (for smooth shading)
+    Float2 uv0, uv1, uv2; // texture coordinates (default {0,0} if OBJ has none)
 };
 
 // RGB color / radiance type.
@@ -151,6 +156,16 @@ void cudaInitBsdfs(const BsdfData* bsdfs, int bsdfCount,
 /// Upload spotlight table. Call once after cudaInitScene.
 /// Pass nullptr / 0 to clear any previously uploaded spotlights.
 void cudaInitSpotlights(const SpotlightData* spotlights, int spotlightCount);
+
+/// Upload per-material textures (one entry per material, same order as materials array).
+/// Each entry is raw RGBA8 pixel data loaded with stb_image (4 bytes per pixel, row-major).
+/// Pass nullptr for `pixels[i]` to use an implicit 1×1 white fallback for that material.
+/// CUDA texture objects are created internally with bilinear filtering and UV-wrap addressing.
+/// Called after cudaInitScene.  Re-calling replaces all previous textures.
+void cudaInitTextures(const uint8_t* const* pixels,
+                      const int* widths,
+                      const int* heights,
+                      int textureCount);
 
 /// Register an OpenGL PBO with CUDA so the kernel can write into it.
 void cudaRegisterPBO(uint32_t pbo);
