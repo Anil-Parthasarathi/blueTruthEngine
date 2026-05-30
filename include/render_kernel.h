@@ -67,12 +67,15 @@ enum BsdfType : int {
     BSDF_Dielectric = 2,
     BSDF_Mirror     = 3,
     BSDF_Microfacet = 4,
+    BSDF_Disney     = 5,
 };
 
 struct BsdfData {
     int type;     // BsdfType
     Float4 p0;    // packed params (diffuse: albedo rgb in xyz)
     Float4 p1;    // packed params (dielectric: intIOR/extIOR in x/y)
+    Float4 p2;    // packed params (disney: sheen/sheen_tint/subsurface/anisotropic)
+    Float4 p3;    // packed params (disney: clearcoat/clearcoat_gloss/eta)
 };
 
 // ---------------------------------------------------------------------------

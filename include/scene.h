@@ -41,7 +41,7 @@ struct MaterialDesc {
 
 struct BsdfDesc {
     std::string name;
-    std::string type; // "diffuse" | "dielectric" | "mirror" | "microfacet"
+    std::string type; // "diffuse" | "dielectric" | "mirror" | "microfacet" | "disney"
 
     // Diffuse params
     float albedoR = 1.0f;
@@ -54,6 +54,23 @@ struct BsdfDesc {
 
     // Microfacet params
     float alpha = 0.1f;
+
+    // Disney params (defaults mirror the Nori Disney constructor)
+    float baseColorR = 0.5f;
+    float baseColorG = 0.5f;
+    float baseColorB = 0.5f;
+    float roughness = 0.1f;
+    float metallic = 0.0f;
+    float specular = 0.5f;
+    float specularTransmission = 0.0f;
+    float specularTint = 0.0f;
+    float sheen = 0.0f;
+    float sheenTint = 0.5f;
+    float subsurface = 0.0f;
+    float anisotropic = 0.0f;
+    float clearcoat = 0.0f;
+    float clearcoatGloss = 1.0f;
+    float eta = 1.5f;
 };
 
 struct EmitterDesc {

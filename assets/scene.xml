@@ -3,18 +3,38 @@
     <bsdf name="whiteDiffuse" type="diffuse" albedoR="0.75" albedoG="0.75" albedoB="0.75" />
     <bsdf name="redDiffuse"   type="diffuse" albedoR="0.75" albedoG="0.15" albedoB="0.15" />
     <bsdf name="greenDiffuse" type="diffuse" albedoR="0.15" albedoG="0.75" albedoB="0.15" />
-    <bsdf name="glass"        type="dielectric" intIOR="1.5" extIOR="1.0" />
-    <bsdf name="mirror"       type="mirror" />
-    <bsdf name="microfacetBunny" type="microfacet" albedoR="0.75" albedoG="0.15" albedoB="0.15" alpha="0.28" intIOR="1.5046" extIOR="1.000277" />
+
+    <!-- Disney materials -->
+    <bsdf name="pinkDiamond" type="disney"
+          base_colorR="1.0" base_colorG="0.45" base_colorB="0.75"
+          roughness="0.03" metallic="0.0" specular="1.0"
+          specular_transmission="0.95" specular_tint="0.15"
+          sheen="0.0" sheen_tint="0.5" subsurface="0.0"
+          anisotropic="0.0" clearcoat="0.25" clearcoat_gloss="1.0"
+          eta="2.42" />
+    <bsdf name="gold" type="disney"
+          base_colorR="1.0" base_colorG="0.78" base_colorB="0.22"
+          roughness="0.28" metallic="1.0" specular="0.5"
+          specular_transmission="0.0" specular_tint="0.0"
+          sheen="0.0" sheen_tint="0.5" subsurface="0.0"
+          anisotropic="0.0" clearcoat="0.0" clearcoat_gloss="1.0"
+          eta="1.5" />
+    <bsdf name="silver" type="disney"
+          base_colorR="0.95" base_colorG="0.93" base_colorB="0.88"
+          roughness="0.12" metallic="1.0" specular="0.5"
+          specular_transmission="0.0" specular_tint="0.0"
+          sheen="0.0" sheen_tint="0.5" subsurface="0.0"
+          anisotropic="0.0" clearcoat="0.0" clearcoat_gloss="1.0"
+          eta="1.5" />
 
     <!-- Materials reference a BSDF.
          Note: this engine currently requires an albedoTexture path; we reuse checkerboard.png. -->
-    <material name="white"  albedoTexture="assets/checkerboard.png" bsdf="whiteDiffuse" />
-    <material name="red"    albedoTexture="assets/checkerboard.png" bsdf="redDiffuse" />
-    <material name="green"  albedoTexture="assets/checkerboard.png" bsdf="greenDiffuse" />
-    <material name="glassM"  albedoTexture="assets/checkerboard.png" bsdf="glass" />
-    <material name="mirrorM" albedoTexture="assets/checkerboard.png" bsdf="mirror" />
-    <material name="microfacetBunnyM" albedoTexture="assets/checkerboard.png" bsdf="microfacetBunny" />
+    <material name="white"       albedoTexture="assets/checkerboard.png" bsdf="whiteDiffuse" />
+    <material name="red"         albedoTexture="assets/checkerboard.png" bsdf="redDiffuse" />
+    <material name="green"       albedoTexture="assets/checkerboard.png" bsdf="greenDiffuse" />
+    <material name="pinkDiamondM" albedoTexture="assets/checkerboard.png" bsdf="pinkDiamond" />
+    <material name="goldM"       albedoTexture="assets/checkerboard.png" bsdf="gold" />
+    <material name="silverM"     albedoTexture="assets/checkerboard.png" bsdf="silver" />
 
     <!-- Cornell box geometry (already positioned in OBJ files) -->
     <mesh filename="assets/floor.obj"     material="white" />
@@ -28,11 +48,11 @@
           isEmitter="true" radianceR="18" radianceG="18" radianceB="18" />
 
     <!-- Objects -->
-    <mesh filename="assets/sphere1.obj" material="mirrorM" />
-    <mesh filename="assets/sphere2.obj" material="glassM" 
-    posX="0.05" posY="-0.05" posZ="-0.20" />
+    <mesh filename="assets/sphere1.obj" material="goldM" />
+    <mesh filename="assets/sphere2.obj" material="silverM"
+          posX="0.05" posY="-0.05" posZ="-0.20" />
     <mesh filename="assets/bunny.obj"
-          material="microfacetBunnyM"
+          material="pinkDiamondM"
           scaleX="4" scaleY="4" scaleZ="4"
           rotY="15"
           posX="0.06" posY="0.37" posZ="-0.10" />

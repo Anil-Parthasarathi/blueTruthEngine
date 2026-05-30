@@ -327,6 +327,8 @@ __device__ bool traceRay(
     bsdfQueryIndirect.wi =
         toLocalFromNormal(its.hitNormal, mul3(pathRecord.ray.direction, -1.0f));
 
+    bsdfQueryIndirect.rndExtra = rngNextFloat01(rng);
+
     const float u0 = rngNextFloat01(rng);
     const float u1 = rngNextFloat01(rng);
     Float3 sampleWeight = bsdfSample(bsdf, bsdfQueryIndirect, u0, u1);

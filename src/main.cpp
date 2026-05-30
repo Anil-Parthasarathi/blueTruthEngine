@@ -640,6 +640,12 @@ int main(int argc, char** argv)
             const float ks = 1.0f - std::fmax(b.albedoR, std::fmax(b.albedoG, b.albedoB));
             d.p0 = { b.albedoR, b.albedoG, b.albedoB, 0.0f };
             d.p1 = { b.alpha, b.intIOR, b.extIOR, ks };
+        } else if (b.type == "disney") {
+            d.type = BSDF_Disney;
+            d.p0 = { b.baseColorR, b.baseColorG, b.baseColorB, b.roughness };
+            d.p1 = { b.metallic, b.specular, b.specularTransmission, b.specularTint };
+            d.p2 = { b.sheen, b.sheenTint, b.subsurface, b.anisotropic };
+            d.p3 = { b.clearcoat, b.clearcoatGloss, b.eta, 0.0f };
         } else {
             std::cerr << "[bsdf] Unsupported bsdf type: " << b.type << "\n";
             std::exit(EXIT_FAILURE);

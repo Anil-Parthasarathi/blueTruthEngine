@@ -136,10 +136,26 @@ SceneDescription loadSceneDescription(const std::string& path)
                 readFOpt("alpha", b.alpha);
                 readFOpt("intIOR", b.intIOR);
                 readFOpt("extIOR", b.extIOR);
+            } else if (b.type == "disney") {
+                readFOpt("base_colorR", b.baseColorR);
+                readFOpt("base_colorG", b.baseColorG);
+                readFOpt("base_colorB", b.baseColorB);
+                readFOpt("roughness", b.roughness);
+                readFOpt("metallic", b.metallic);
+                readFOpt("specular", b.specular);
+                readFOpt("specular_transmission", b.specularTransmission);
+                readFOpt("specular_tint", b.specularTint);
+                readFOpt("sheen", b.sheen);
+                readFOpt("sheen_tint", b.sheenTint);
+                readFOpt("subsurface", b.subsurface);
+                readFOpt("anisotropic", b.anisotropic);
+                readFOpt("clearcoat", b.clearcoat);
+                readFOpt("clearcoat_gloss", b.clearcoatGloss);
+                readFOpt("eta", b.eta);
             } else {
                 std::cerr << "[scene] <bsdf name=\"" << b.name
                           << "\"> unsupported type: \"" << b.type
-                          << "\" (expected diffuse|dielectric|mirror|microfacet)\n";
+                          << "\" (expected diffuse|dielectric|mirror|microfacet|disney)\n";
                 std::exit(EXIT_FAILURE);
             }
 

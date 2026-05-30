@@ -17,10 +17,11 @@ enum BsdfMeasure : int {
 };
 
 struct BsdfQueryRecord {
-    Float3 wi;      // incident direction  (local frame)
-    Float3 wo;      // outgoing direction  (local frame, set by sample())
-    int    measure; // BsdfMeasure
-    float  eta;     // relative IOR        (set by sample())
+    Float3 wi;       // incident direction  (local frame)
+    Float3 wo;       // outgoing direction  (local frame, set by sample())
+    int    measure;  // BsdfMeasure
+    float  eta;      // relative IOR        (set by sample())
+    float  rndExtra; // extra 1D sample for lobe selection (set by integrator)
 };
 
 __device__ __forceinline__ float cosThetaLocal(const Float3& w) { return w.z; }
@@ -35,6 +36,7 @@ __device__ __forceinline__ Float3 hadamard3(const Float3& a, const Float3& b)
 #include "rt_bsdf_dielectric.cuh"
 #include "rt_bsdf_mirror.cuh"
 #include "rt_bsdf_microfacet.cuh"
+#include "rt_bsdf_disney.cuh"
 
 // ── Dispatchers ───────────────────────────────────────────────────────
 __device__ __forceinline__ Float3 bsdfEval(const BsdfData& b, const BsdfQueryRecord& rec)
@@ -43,6 +45,7 @@ __device__ __forceinline__ Float3 bsdfEval(const BsdfData& b, const BsdfQueryRec
     if (b.type == BSDF_Dielectric) return bsdfEvalDielectric(b, rec);
     if (b.type == BSDF_Mirror)     return bsdfEvalMirror(b, rec);
     if (b.type == BSDF_Microfacet) return bsdfEvalMicrofacet(b, rec);
+    if (b.type == BSDF_Disney)     return bsdfEvalDisney(b, rec);
     return {0.0f, 0.0f, 0.0f};
 }
 
@@ -52,6 +55,7 @@ __device__ __forceinline__ float bsdfPdf(const BsdfData& b, const BsdfQueryRecor
     if (b.type == BSDF_Dielectric) return bsdfPdfDielectric(rec);
     if (b.type == BSDF_Mirror)     return bsdfPdfMirror(rec);
     if (b.type == BSDF_Microfacet) return bsdfPdfMicrofacet(b, rec);
+    if (b.type == BSDF_Disney)     return bsdfPdfDisney(b, rec);
     return 0.0f;
 }
 
@@ -62,6 +66,7 @@ __device__ __forceinline__ Float3 bsdfSample(const BsdfData& b, BsdfQueryRecord&
     if (b.type == BSDF_Dielectric) return bsdfSampleDielectric(b, rec, u1, u2, outPdf);
     if (b.type == BSDF_Mirror)     return bsdfSampleMirror(b, rec, u1, u2, outPdf);
     if (b.type == BSDF_Microfacet) return bsdfSampleMicrofacet(b, rec, u1, u2, outPdf);
+    if (b.type == BSDF_Disney)     return bsdfSampleDisney(b, rec, u1, u2, outPdf);
     if (outPdf) *outPdf = 0.0f;
     return {0.0f, 0.0f, 0.0f};
 }
@@ -75,5 +80,5 @@ __device__ __forceinline__ bool bsdfIsDelta(const BsdfData& b)
 // Nori-like: non-delta BSDFs that participate in NEE / MIS (diffuse + microfacet).
 __device__ __forceinline__ bool bsdfIsDiffuse(const BsdfData& b)
 {
-    return b.type == BSDF_Diffuse || b.type == BSDF_Microfacet;
+    return b.type == BSDF_Diffuse || b.type == BSDF_Microfacet || b.type == BSDF_Disney;
 }
