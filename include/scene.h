@@ -79,6 +79,17 @@ struct EmitterDesc {
     std::string targetMesh;    // for area lights: mesh/material to bind to
 };
 
+/// Spotlight point light with smooth cone falloff.
+/// Angles are in degrees (converted to cosines on load, matching the Nori constructor).
+struct SpotlightDesc {
+    float posX = 0.0f, posY = 0.0f, posZ = 0.0f;
+    float dirX = 0.0f, dirY = -1.0f, dirZ = 0.0f; // default points down
+    float radianceR = 1.0f, radianceG = 1.0f, radianceB = 1.0f;
+    float intensity = 1.0f;
+    float innerConeAngle = 0.0f;    // full intensity inside this angle
+    float outerConeAngle = 180.0f;  // zero outside this angle
+};
+
 struct CameraDesc {
     // Eye position
     float eyeX = 0.0f;
@@ -101,10 +112,11 @@ struct CameraDesc {
 
 struct SceneDescription {
     // Core
-    std::vector<MeshDesc>     meshes;
-    std::vector<MaterialDesc> materials;
-    std::vector<BsdfDesc>     bsdfs;
-    std::vector<EmitterDesc>  emitters;
+    std::vector<MeshDesc>      meshes;
+    std::vector<MaterialDesc>  materials;
+    std::vector<BsdfDesc>      bsdfs;
+    std::vector<EmitterDesc>   emitters;
+    std::vector<SpotlightDesc> spotlights;
 
     // Camera
     CameraDesc camera;

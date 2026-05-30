@@ -802,6 +802,37 @@ int main(int argc, char** argv)
     } else {
         cudaInitBsdfs(nullptr, 0, nullptr, 0);
     }
+
+    // Build and upload spotlight table.
+    // caching the cosine so it doesnt have to be found every time the emitter is sampled
+    // converting to radians since degrees are easier to work with for scene setup but cos function takes radians
+    {
+        std::vector<SpotlightData> spotlightsGpu;
+        spotlightsGpu.reserve(scene.spotlights.size());
+        for (const auto& sd : scene.spotlights) {
+            SpotlightData sp{};
+            sp.position  = { sd.posX, sd.posY, sd.posZ };
+
+            // Normalize the direction vector
+            float dx = sd.dirX, dy = sd.dirY, dz = sd.dirZ;
+            float dlen = std::sqrtf(dx*dx + dy*dy + dz*dz);
+            if (dlen > 1e-6f) { dx /= dlen; dy /= dlen; dz /= dlen; }
+            sp.direction = { dx, dy, dz };
+
+            sp.radiance  = { sd.radianceR, sd.radianceG, sd.radianceB };
+            sp.intensity = sd.intensity;
+            static constexpr float kPi = 3.14159265358979323846f;
+            sp.innerConeCosine = std::cosf(sd.innerConeAngle * kPi / 180.0f);
+            sp.outerConeCosine = std::cosf(sd.outerConeAngle * kPi / 180.0f);
+            spotlightsGpu.push_back(sp);
+        }
+        if (!spotlightsGpu.empty()) {
+            cudaInitSpotlights(spotlightsGpu.data(), static_cast<int>(spotlightsGpu.size()));
+        } else {
+            cudaInitSpotlights(nullptr, 0);
+        }
+    }
+
     cudaRegisterPBO(g_pbo);
 
     std::cout << "[cuda] Ready – entering render loop\n";

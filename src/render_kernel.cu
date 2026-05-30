@@ -48,6 +48,8 @@ struct DirectLightingContext {
     int bvhNodeCount;
     const int* bvhPrimIndices;
     EmitterSamplingData emitterSampling;
+    const SpotlightData* spotlights;
+    int spotlightCount;
 };
 
 // ---------------------------------------------------------------------------
@@ -117,6 +119,10 @@ static LinearBVHNode* s_bvhNodes_d       = nullptr;
 static int            s_bvhNodeCount     = 0;
 static int*           s_bvhPrimIndices_d = nullptr; // reordered triangle indices
 
+// Spotlight point lights (handled separately from mesh emitters)
+static SpotlightData* s_spotlights_d    = nullptr;
+static int            s_spotlightCount  = 0;
+
 // ---------------------------------------------------------------------------
 //  Render kernel
 // ---------------------------------------------------------------------------
@@ -178,6 +184,203 @@ __device__ __forceinline__ float convertAreaPDFtoSolidAnglePDF(
     return lightPDFArea * dist2 / denom;
 }
 
+// ---------------------------------------------------------------------------
+//  NEE helpers  (called from traceRay, broken out for readability)
+// ---------------------------------------------------------------------------
+
+// Handles the BRDF-sampled emitter hit: computes the MIS BRDF weight and
+// accumulates the emitted radiance into the path's color.
+__device__ __forceinline__ void accumulateEmitterHit(
+    PathState& pathRecord,
+    const Intersection& its,
+    const DirectLightingContext& lightingCtx)
+{
+    const Float3 surfaceRadiance = lightingCtx.triangleEmission[its.triangleIndex];
+
+    EmitterQueryRecord directEmitterQuery{};
+    directEmitterQuery.originPoint      = pathRecord.ray.origin;
+    directEmitterQuery.hitPoint         = its.hitPoint;
+    directEmitterQuery.hitNormal        = its.hitNormal;
+    directEmitterQuery.directionToLight = pathRecord.ray.direction;
+
+    float brdfWeight = 1.0f;
+
+    if (!pathRecord.specularBounce) {
+        const int emitterIdx = findEmitterIndexForTriangle(
+            its.triangleIndex,
+            lightingCtx.emitterSampling.emitters,
+            lightingCtx.emitterSampling.emitterCount,
+            lightingCtx.emitterSampling.emitterTriIndices);
+
+        if (emitterIdx >= 0) {
+            const float lightPDFAreaBRDF =
+                emitterProbabilityEvaluatorFromMesh(
+                    lightingCtx.emitterSampling.emitters[emitterIdx]) *
+                sceneGetEmitterPDF(emitterIdx,
+                                   lightingCtx.emitterSampling.sceneEmitterCdf,
+                                   lightingCtx.emitterSampling.emitterCount);
+
+            const float lightPDFSolidAngleBRDF =
+                convertAreaPDFtoSolidAnglePDF(lightPDFAreaBRDF, directEmitterQuery);
+
+            const float weightDenomSumBRDF =
+                pathRecord.brdfPDF + lightPDFSolidAngleBRDF;
+
+            if (weightDenomSumBRDF <= 0.0f) {
+                brdfWeight = 0.0f;
+            } else {
+                brdfWeight = pathRecord.brdfPDF / weightDenomSumBRDF;
+            }
+        }
+    }
+
+    const Float3 rad = checkRadiance(surfaceRadiance, directEmitterQuery);
+    pathRecord.accumulatedColor = add3(
+        pathRecord.accumulatedColor,
+        mul3(mul3(rad, pathRecord.throughput), brdfWeight));
+}
+
+// Samples one randomly chosen area (mesh) emitter using MIS and accumulates
+// its contribution into the path's color.
+__device__ __forceinline__ void sampleAreaEmitterNEE(
+    PathState& pathRecord,
+    RngState& rng,
+    const Intersection& its,
+    const BsdfData& bsdf,
+    const DirectLightingContext& lightingCtx)
+{
+    const float uLight0 = rngNextFloat01(rng);
+    const float uLight1 = rngNextFloat01(rng);
+
+    EmitterQueryRecord emitterQuery{};
+    emitterQuery.originPoint = its.hitPoint;
+
+    Float3 le = sampleGenerator(lightingCtx.emitterSampling, emitterQuery, uLight0, uLight1);
+
+    if ((le.x <= 0.0f && le.y <= 0.0f && le.z <= 0.0f) ||
+        emitterQuery.emitterPdf <= 0.0f ||
+        probabilityEvaluator(emitterQuery) <= 0.0f) {
+        return;
+    }
+
+    const float distToLight = distance3(emitterQuery.hitPoint, its.hitPoint);
+
+    Ray shadowRay{};
+    shadowRay.origin    = its.hitPoint;
+    shadowRay.direction = emitterQuery.directionToLight;
+
+    if (sceneIntersectAnyHit(shadowRay, lightingCtx.emitterSampling.triangles,
+                             lightingCtx.bvhNodes, lightingCtx.bvhNodeCount,
+                             lightingCtx.bvhPrimIndices,
+                             RT_EPSILON, distToLight - RT_EPSILON)) {
+        return;
+    }
+
+    const float geo =
+        fabsf(dot3(its.hitNormal, emitterQuery.directionToLight)) *
+        fabsf(dot3(emitterQuery.hitNormal,
+                   mul3(emitterQuery.directionToLight, -1.0f))) /
+        (distToLight * distToLight);
+
+    BsdfQueryRecord bsdfQueryDirect{};
+    bsdfQueryDirect.wi =
+        toLocalFromNormal(its.hitNormal, mul3(pathRecord.ray.direction, -1.0f));
+    bsdfQueryDirect.wo =
+        toLocalFromNormal(its.hitNormal, emitterQuery.directionToLight);
+    bsdfQueryDirect.measure = BSDF_ESolidAngle;
+
+    const Float3 fr = bsdfEval(bsdf, bsdfQueryDirect);
+
+    const float lightPDFareaDirect   = emitterQuery.emitterPdf * emitterQuery.pdf;
+    const float lightPDFSolidAngleDirect =
+        convertAreaPDFtoSolidAnglePDF(lightPDFareaDirect, emitterQuery);
+    const float brdfPDFDirect        = bsdfPdf(bsdf, bsdfQueryDirect);
+    const float weightDenomSumDirect = brdfPDFDirect + lightPDFSolidAngleDirect;
+
+    if (weightDenomSumDirect <= 0.0f) return;
+
+    const float lightWeight = lightPDFSolidAngleDirect / weightDenomSumDirect;
+
+    Float3 contrib = mul3(fr, le);
+    contrib = mul3(contrib, lightWeight);
+    contrib = mul3(contrib, geo);
+    contrib = div3(contrib, lightPDFareaDirect);
+
+    pathRecord.accumulatedColor =
+        add3(pathRecord.accumulatedColor, mul3(contrib, pathRecord.throughput));
+}
+
+// Iterates every spotlight and accumulates each one's NEE contribution.
+// Point lights have a delta PDF — probabilityEvaluator returns 0 and
+// checkRadiance returns 0 (BRDF rays can never accidentally hit a point).
+// So there is no MIS: we use lightWeight = 1.0 for each spotlight.
+__device__ __forceinline__ void sampleSpotlightNEE(
+    PathState& pathRecord,
+    const Intersection& its,
+    const BsdfData& bsdf,
+    const DirectLightingContext& lightingCtx)
+{
+    for (int si = 0; si < lightingCtx.spotlightCount; ++si) {
+        const SpotlightData spot = lightingCtx.spotlights[si];
+
+        // set the emitter query record
+        // simply give the hitpoint as the origin point of the spot light
+        // hit normal is the opposite of the direction to the light since the spot light is facing in the direction vector
+        // pdf is 1 since there is only one possible point to hit
+        const Float3 originToLight = sub3(spot.position, its.hitPoint);
+        const float sqDist = dot3(originToLight, originToLight);
+        if (sqDist < RT_EPSILON * RT_EPSILON) continue;
+        const float dist     = sqrtf(sqDist);
+        const Float3 dirToLight = div3(originToLight, dist);
+
+        // get the cosine of the angle between the direction to the light and the forward direction of the spot light
+        const float lightCos = dot3(mul3(dirToLight, -1.0f), spot.direction);
+
+        // if the angle is greater than the outer cone angle, return 0
+        // if the angle is greater then return the full radiance (scaled by distance)
+        // otherwise interpolate by finding the falloff
+        Float3 spotLe;
+        if (lightCos <= spot.outerConeCosine) {
+            continue;
+        } else if (lightCos >= spot.innerConeCosine) {
+            spotLe = mul3(spot.radiance, spot.intensity / sqDist);
+        } else {
+            float falloff = (lightCos - spot.outerConeCosine) /
+                            (spot.innerConeCosine - spot.outerConeCosine);
+            float smoothedFalloff = (falloff * falloff) * (3.0f - (2.0f * falloff));
+            spotLe = mul3(spot.radiance, (spot.intensity * smoothedFalloff) / sqDist);
+        }
+
+        // Shadow ray — bound to just before the light to avoid self-intersection
+        Ray shadowRay{};
+        shadowRay.origin    = its.hitPoint;
+        shadowRay.direction = dirToLight;
+        if (sceneIntersectAnyHit(shadowRay, lightingCtx.emitterSampling.triangles,
+                                 lightingCtx.bvhNodes, lightingCtx.bvhNodeCount,
+                                 lightingCtx.bvhPrimIndices,
+                                 RT_EPSILON, dist - RT_EPSILON)) {
+            continue;
+        }
+
+        BsdfQueryRecord bsdfQuerySpot{};
+        bsdfQuerySpot.wi =
+            toLocalFromNormal(its.hitNormal, mul3(pathRecord.ray.direction, -1.0f));
+        bsdfQuerySpot.wo      = toLocalFromNormal(its.hitNormal, dirToLight);
+        bsdfQuerySpot.measure = BSDF_ESolidAngle;
+
+        const Float3 fr = bsdfEval(bsdf, bsdfQuerySpot);
+
+        // point light so we assume that random bounces never hit the spot light directly
+        // contribution: fr * Le * cos_surface  (pdf = 1, no area term)
+        const float cosSurface = fabsf(dot3(its.hitNormal, dirToLight));
+        const Float3 contrib   = mul3(mul3(mul3(fr, spotLe), cosSurface), pathRecord.throughput);
+        pathRecord.accumulatedColor = add3(pathRecord.accumulatedColor, contrib);
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Main path-tracing step: intersect, shade, advance ray
+// ---------------------------------------------------------------------------
 __device__ bool traceRay(
     PathState& pathRecord,
     RngState& rng,
@@ -198,127 +401,13 @@ __device__ bool traceRay(
 
     // Check if hit an emitter
     if (lightingCtx.triangleEmitterFlags[its.triangleIndex] != 0) {
-        const Float3 surfaceRadiance =
-            lightingCtx.triangleEmission[its.triangleIndex];
-
-        {
-            EmitterQueryRecord directEmitterQuery{};
-            directEmitterQuery.originPoint = pathRecord.ray.origin;
-            directEmitterQuery.hitPoint    = its.hitPoint;
-            directEmitterQuery.hitNormal   = its.hitNormal;
-            directEmitterQuery.directionToLight = pathRecord.ray.direction;
-
-            float brdfWeight = 1.0f;
-
-            if (!pathRecord.specularBounce) {
-                const int emitterIdx = findEmitterIndexForTriangle(
-                    its.triangleIndex,
-                    lightingCtx.emitterSampling.emitters,
-                    lightingCtx.emitterSampling.emitterCount,
-                    lightingCtx.emitterSampling.emitterTriIndices);
-
-                if (emitterIdx >= 0) {
-                    const float lightPDFAreaBRDF =
-                        emitterProbabilityEvaluatorFromMesh(
-                            lightingCtx.emitterSampling.emitters[emitterIdx]) *
-                        sceneGetEmitterPDF(emitterIdx,
-                                             lightingCtx.emitterSampling.sceneEmitterCdf,
-                                             lightingCtx.emitterSampling.emitterCount);
-
-                    const float lightPDFSolidAngleBRDF =
-                        convertAreaPDFtoSolidAnglePDF(lightPDFAreaBRDF, directEmitterQuery);
-
-                    const float weightDenomSumBRDF =
-                        pathRecord.brdfPDF + lightPDFSolidAngleBRDF;
-
-                    if (weightDenomSumBRDF <= 0.0f) {
-                        brdfWeight = 0.0f;
-                    } else {
-                        brdfWeight = pathRecord.brdfPDF / weightDenomSumBRDF;
-                    }
-                }
-            }
-
-            const Float3 rad =
-                checkRadiance(surfaceRadiance, directEmitterQuery);
-
-            pathRecord.accumulatedColor = add3(
-                pathRecord.accumulatedColor,
-                mul3(mul3(rad, pathRecord.throughput), brdfWeight));
-        }
+        accumulateEmitterHit(pathRecord, its, lightingCtx);
     }
 
     if (bsdfIsDiffuse(bsdf)) {
         pathRecord.specularBounce = false;
-
-        const float uLight0 = rngNextFloat01(rng);
-        const float uLight1 = rngNextFloat01(rng);
-
-        EmitterQueryRecord emitterQuery{};
-        emitterQuery.originPoint = its.hitPoint;
-
-        Float3 le = sampleGenerator(lightingCtx.emitterSampling, emitterQuery, uLight0, uLight1);
-
-        if ((le.x <= 0.0f && le.y <= 0.0f && le.z <= 0.0f) ||
-            emitterQuery.emitterPdf <= 0.0f ||
-            probabilityEvaluator(emitterQuery) <= 0.0f) {
-            le = {0.0f, 0.0f, 0.0f};
-        } else {
-        const float distToLight =
-            distance3(emitterQuery.hitPoint, its.hitPoint);
-
-        Ray shadowRay{};
-        shadowRay.origin    = its.hitPoint;
-        shadowRay.direction = emitterQuery.directionToLight;
-
-        if (sceneIntersectAnyHit(shadowRay, lightingCtx.emitterSampling.triangles,
-                                 lightingCtx.bvhNodes, lightingCtx.bvhNodeCount,
-                                 lightingCtx.bvhPrimIndices,
-                                 RT_EPSILON, distToLight - RT_EPSILON)) {
-            le = {0.0f, 0.0f, 0.0f};
-        } else {
-            const float geo =
-                fabsf(dot3(its.hitNormal, emitterQuery.directionToLight)) *
-                fabsf(dot3(emitterQuery.hitNormal,
-                           mul3(emitterQuery.directionToLight, -1.0f))) /
-                (distToLight * distToLight);
-
-            BsdfQueryRecord bsdfQueryDirect{};
-            bsdfQueryDirect.wi =
-                toLocalFromNormal(its.hitNormal, mul3(pathRecord.ray.direction, -1.0f));
-            bsdfQueryDirect.wo =
-                toLocalFromNormal(its.hitNormal, emitterQuery.directionToLight);
-            bsdfQueryDirect.measure = BSDF_ESolidAngle;
-
-            Float3 fr = bsdfEval(bsdf, bsdfQueryDirect);
-
-            const float lightPDFareaDirect =
-                emitterQuery.emitterPdf * emitterQuery.pdf;
-
-            const float lightPDFSolidAngleDirect =
-                convertAreaPDFtoSolidAnglePDF(lightPDFareaDirect, emitterQuery);
-
-            const float brdfPDFDirect = bsdfPdf(bsdf, bsdfQueryDirect);
-
-            const float weightDenomSumDirect =
-                brdfPDFDirect + lightPDFSolidAngleDirect;
-
-            if (weightDenomSumDirect <= 0.0f) {
-                le = {0.0f, 0.0f, 0.0f};
-            } else {
-                const float lightWeight =
-                    lightPDFSolidAngleDirect / weightDenomSumDirect;
-
-                Float3 tmp = mul3(fr, le);
-                tmp = mul3(tmp, lightWeight);
-                tmp = mul3(tmp, geo);
-                le = div3(tmp, lightPDFareaDirect);
-            }
-        }
-        }
-
-        pathRecord.accumulatedColor =
-            add3(pathRecord.accumulatedColor, mul3(le, pathRecord.throughput));
+        sampleAreaEmitterNEE(pathRecord, rng, its, bsdf, lightingCtx);
+        sampleSpotlightNEE(pathRecord, its, bsdf, lightingCtx);
     } else {
         pathRecord.specularBounce = true;
     }
@@ -367,6 +456,8 @@ __global__ void renderKernel(uint32_t* framebuffer,
                               const LinearBVHNode* bvhNodes,
                               int bvhNodeCount,
                               const int* bvhPrimIndices,
+                              const SpotlightData* spotlights,
+                              int spotlightCount,
                               uint32_t frameIndex)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -386,6 +477,8 @@ __global__ void renderKernel(uint32_t* framebuffer,
         emitterTriCdf,
         sceneEmitterCdf
     };
+    lightingCtx.spotlights     = spotlights;
+    lightingCtx.spotlightCount = spotlightCount;
 
     const uint32_t pixelIndex =
         static_cast<uint32_t>(y) * static_cast<uint32_t>(width) + static_cast<uint32_t>(x);
@@ -680,6 +773,24 @@ void cudaInitBVH(const LinearBVHNode* nodes, int nodeCount,
                           cudaMemcpyHostToDevice));
 }
 
+void cudaInitSpotlights(const SpotlightData* spotlights, int spotlightCount)
+{
+    if (s_spotlights_d) {
+        cudaFree(s_spotlights_d);
+        s_spotlights_d = nullptr;
+    }
+    s_spotlightCount = 0;
+
+    if (!spotlights || spotlightCount <= 0) return;
+
+    s_spotlightCount = spotlightCount;
+    CUDA_CHECK(cudaMalloc(&s_spotlights_d,
+                          sizeof(SpotlightData) * static_cast<size_t>(spotlightCount)));
+    CUDA_CHECK(cudaMemcpy(s_spotlights_d, spotlights,
+                          sizeof(SpotlightData) * static_cast<size_t>(spotlightCount),
+                          cudaMemcpyHostToDevice));
+}
+
 void cudaRegisterPBO(uint32_t pbo)
 {
     CUDA_CHECK(cudaGraphicsGLRegisterBuffer(
@@ -742,6 +853,7 @@ void cudaRender(int imageWidth, int imageHeight)
                                    s_triangleBsdfIds_d,
                                    s_bvhNodes_d, s_bvhNodeCount,
                                    s_bvhPrimIndices_d,
+                                   s_spotlights_d, s_spotlightCount,
                                    s_frameIndex++);
     CUDA_CHECK(cudaGetLastError());
 
@@ -836,4 +948,10 @@ void cudaCleanup()
         s_bvhPrimIndices_d = nullptr;
     }
     s_bvhNodeCount = 0;
+
+    if (s_spotlights_d) {
+        cudaFree(s_spotlights_d);
+        s_spotlights_d = nullptr;
+    }
+    s_spotlightCount = 0;
 }

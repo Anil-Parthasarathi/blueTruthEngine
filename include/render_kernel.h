@@ -61,6 +61,18 @@ struct EmitterData {
     float powerWeight;     // selection weight used in sceneEmitterCdf
 };
 
+/// Spotlight (point light with cone falloff).
+/// Stored separately from mesh emitters — point lights have a delta PDF
+/// and are handled with pure NEE (no MIS with BRDF sampling).
+struct SpotlightData {
+    Float3 position;
+    Float3 direction;       // normalized forward direction of the cone
+    Float3 radiance;
+    float  intensity;
+    float  innerConeCosine; // cos(innerConeAngle) — full intensity within this angle
+    float  outerConeCosine; // cos(outerConeAngle) — zero outside this angle
+};
+
 /// Minimal BSDF plumbing. You will implement the behavior.
 enum BsdfType : int {
     BSDF_Diffuse    = 1,
@@ -135,6 +147,10 @@ void cudaInitEmitterTable(const EmitterData* emitters, int emitterCount,
 /// Upload BSDF tables and per-triangle BSDF ids.
 void cudaInitBsdfs(const BsdfData* bsdfs, int bsdfCount,
                    const int* triangleBsdfIds, int triangleCount);
+
+/// Upload spotlight table. Call once after cudaInitScene.
+/// Pass nullptr / 0 to clear any previously uploaded spotlights.
+void cudaInitSpotlights(const SpotlightData* spotlights, int spotlightCount);
 
 /// Register an OpenGL PBO with CUDA so the kernel can write into it.
 void cudaRegisterPBO(uint32_t pbo);

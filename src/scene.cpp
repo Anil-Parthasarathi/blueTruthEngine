@@ -337,6 +337,43 @@ SceneDescription loadSceneDescription(const std::string& path)
         }
     }
 
+    // --- Spotlights ---------------------------------------------------------
+    {
+        size_t searchFrom = 0;
+        while (true) {
+            std::string tagContent;
+            if (!extractNextTag(xml, "spotlight", searchFrom, tagContent))
+                break;
+
+            SpotlightDesc s;
+
+            auto readF = [&](const char* attrName, float& out) {
+                std::string v = extractAttributeFromTag(tagContent, attrName);
+                if (v.empty()) return;
+                try { out = std::stof(v); } catch (...) {
+                    std::cerr << "[scene] <spotlight> invalid float attribute `"
+                              << attrName << "`: \"" << v << "\"\n";
+                    std::exit(EXIT_FAILURE);
+                }
+            };
+
+            readF("posX",          s.posX);
+            readF("posY",          s.posY);
+            readF("posZ",          s.posZ);
+            readF("dirX",          s.dirX);
+            readF("dirY",          s.dirY);
+            readF("dirZ",          s.dirZ);
+            readF("radianceR",     s.radianceR);
+            readF("radianceG",     s.radianceG);
+            readF("radianceB",     s.radianceB);
+            readF("intensity",     s.intensity);
+            readF("innerConeAngle", s.innerConeAngle);
+            readF("outerConeAngle", s.outerConeAngle);
+
+            desc.spotlights.push_back(s);
+        }
+    }
+
     // --- Window / film ------------------------------------------------------
     {
         auto w = extractAttribute(xml, "window", "width");

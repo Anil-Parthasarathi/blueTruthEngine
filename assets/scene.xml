@@ -5,8 +5,8 @@
     <bsdf name="greenDiffuse" type="diffuse" albedoR="0.15" albedoG="0.75" albedoB="0.15" />
 
     <!-- Disney materials -->
-    <bsdf name="pinkDiamond" type="disney"
-          base_colorR="1.0" base_colorG="0.45" base_colorB="0.75"
+    <bsdf name="blueDiamond" type="disney"
+          base_colorR="0.2" base_colorG="0.2" base_colorB="1.0"
           roughness="0.03" metallic="0.0" specular="1.0"
           specular_transmission="0.95" specular_tint="0.15"
           sheen="0.0" sheen_tint="0.5" subsurface="0.0"
@@ -29,12 +29,12 @@
 
     <!-- Materials reference a BSDF.
          Note: this engine currently requires an albedoTexture path; we reuse checkerboard.png. -->
-    <material name="white"       albedoTexture="assets/checkerboard.png" bsdf="whiteDiffuse" />
-    <material name="red"         albedoTexture="assets/checkerboard.png" bsdf="redDiffuse" />
-    <material name="green"       albedoTexture="assets/checkerboard.png" bsdf="greenDiffuse" />
-    <material name="pinkDiamondM" albedoTexture="assets/checkerboard.png" bsdf="pinkDiamond" />
-    <material name="goldM"       albedoTexture="assets/checkerboard.png" bsdf="gold" />
-    <material name="silverM"     albedoTexture="assets/checkerboard.png" bsdf="silver" />
+    <material name="white"        albedoTexture="assets/checkerboard.png" bsdf="whiteDiffuse" />
+    <material name="red"          albedoTexture="assets/checkerboard.png" bsdf="redDiffuse" />
+    <material name="green"        albedoTexture="assets/checkerboard.png" bsdf="greenDiffuse" />
+    <material name="pinkDiamondM" albedoTexture="assets/checkerboard.png" bsdf="blueDiamond" />
+    <material name="goldM"        albedoTexture="assets/checkerboard.png" bsdf="gold" />
+    <material name="silverM"      albedoTexture="assets/checkerboard.png" bsdf="silver" />
 
     <!-- Cornell box geometry (already positioned in OBJ files) -->
     <mesh filename="assets/floor.obj"     material="white" />
@@ -42,10 +42,10 @@
     <mesh filename="assets/leftwall.obj"  material="red" />
     <mesh filename="assets/rightwall.obj" material="green" />
 
-    <!-- Ceiling area light -->
+    <!-- Ceiling area light — dimmed so the spotlight is the dominant source -->
     <mesh filename="assets/light.obj"
           material="white"
-          isEmitter="true" radianceR="18" radianceG="18" radianceB="18" />
+          isEmitter="true" radianceR="2.5" radianceG="2.5" radianceB="2.5" />
 
     <!-- Objects -->
     <mesh filename="assets/sphere1.obj" material="goldM" />
@@ -56,6 +56,18 @@
           scaleX="4" scaleY="4" scaleZ="4"
           rotY="15"
           posX="0.06" posY="0.37" posZ="-0.10" />
+
+    <!-- Spotlight: positioned just below the ceiling light, aimed at the center
+         of the back wall (0, 0.8, -1.04).  Direction vector is from the light
+         position to the target, which works out to roughly (0, -0.53, -1) normalized. -->
+    <spotlight
+        posX="0.0"  posY="1.55" posZ="-0.03"
+        dirX="0.0"  dirY="-0.53" dirZ="-1.0"
+        radianceR="1.0" radianceG="0.92" radianceB="0.78"
+        intensity="4.0"
+        innerConeAngle="22.0"
+        outerConeAngle="38.0"
+    />
 
     <!-- Camera used for ray generation -->
     <camera
