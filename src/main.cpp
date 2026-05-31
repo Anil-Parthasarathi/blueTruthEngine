@@ -581,6 +581,10 @@ static void keyCallback(GLFWwindow* window, int key, int /*scancode*/,
 
     if (key == GLFW_KEY_C && action == GLFW_PRESS)
         captureScreenshot();
+
+    // Toggle the OptiX AI denoiser (off by default).
+    if (key == GLFW_KEY_D && action == GLFW_PRESS)
+        cudaToggleDenoiser();
 }
 
 static void framebufferSizeCallback(GLFWwindow* /*window*/, int w, int h)
@@ -866,11 +870,10 @@ int main(int argc, char** argv)
                    triangleMaterialIds.data(),
                    g_windowWidth, g_windowHeight);
 
-    {
-        BVHBuildResult bvh = buildBVH(triangles.data(), static_cast<int>(triangles.size()));
-        cudaInitBVH(bvh.nodes.data(),      static_cast<int>(bvh.nodes.size()),
-                    bvh.primIndices.data(), static_cast<int>(bvh.primIndices.size()));
-    }
+    // Intersection now runs on the RT cores via an OptiX GAS, which cudaInitBVH
+    // builds on-GPU directly from the triangle data uploaded above. The old
+    // CPU-built LinearBVH is no longer used.
+    cudaInitBVH(nullptr, 0, nullptr, 0);
 
     cudaInitTriangleEmission(triangleEmission.data(),
                              static_cast<int>(triangleEmission.size()));

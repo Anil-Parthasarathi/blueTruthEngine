@@ -21,14 +21,24 @@
 #include <glad/gl.h>       // Must come before cuda_gl_interop.h (defines GLuint)
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
+
+// ── OptiX (RT-core acceleration) ────────────────────────────────────
+#include <cuda.h>          // CUdeviceptr / CUcontext typedefs used by the OptiX API
+#include <optix.h>
+#include <optix_stubs.h>
+#include <optix_function_table_definition.h>   // MUST appear in exactly one TU
+#include <optix_stack_size.h>
+#include "optix_launch_params.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
 #include <cstdint>
 #include <vector>
+#include <algorithm>
 
 static constexpr int   SAMPLES_PER_PIXEL = 5;
-static constexpr int   MAX_BOUNCES   = 200;
+static constexpr int   MAX_BOUNCES   = 10;
 static constexpr float RT_EPSILON    = 1e-4f;
 
 struct PathState {
@@ -70,6 +80,20 @@ struct DirectLightingContext {
             exit(EXIT_FAILURE);                                                \
         }                                                                      \
     } while (0)
+
+#define OPTIX_CHECK(call)                                                     \
+    do {                                                                       \
+        OptixResult res = (call);                                              \
+        if (res != OPTIX_SUCCESS) {                                            \
+            fprintf(stderr, "OptiX error at %s:%d – %s\n",                    \
+                    __FILE__, __LINE__, optixGetErrorString(res));              \
+            exit(EXIT_FAILURE);                                                \
+        }                                                                      \
+    } while (0)
+
+// Embedded PTX of src/optix_programs.cu (generated at build time, see CMake).
+extern "C" const char* getOptixPtx();
+extern "C" size_t      getOptixPtxSize();
 
 // ---------------------------------------------------------------------------
 //  CUDA-GL interop state
@@ -135,6 +159,43 @@ static std::vector<cudaArray_t>         s_cuArrays;        // pixel data on devi
 static std::vector<cudaTextureObject_t> s_texObjects_h;    // texture object handles (host copy)
 static cudaTextureObject_t*             s_texObjects_d = nullptr; // device array of handles
 static int                              s_textureCount = 0;
+
+// ---------------------------------------------------------------------------
+//  OptiX state (RT-core acceleration). The path tracer now runs as an OptiX
+//  raygen pipeline; the CPU-built BVH and CUDA megakernel are no longer used.
+// ---------------------------------------------------------------------------
+static OptixDeviceContext      s_optixContext   = nullptr;
+static OptixModule             s_optixModule    = nullptr;
+static OptixPipeline           s_optixPipeline  = nullptr;
+static OptixProgramGroup       s_pgRaygen       = nullptr;
+static OptixProgramGroup       s_pgMissRadiance = nullptr;
+static OptixProgramGroup       s_pgMissShadow   = nullptr;
+static OptixProgramGroup       s_pgHitRadiance  = nullptr;
+static OptixShaderBindingTable s_sbt            = {};
+static bool                    s_optixReady     = false;
+
+// Geometry acceleration structure (GAS) built on-GPU from the triangle data.
+static CUdeviceptr             s_gasOutputBuffer = 0;
+static OptixTraversableHandle  s_gasHandle       = 0;
+static Float3*                 s_gasVertices_d    = nullptr; // packed 3*triCount vertices
+
+// Device copy of the launch parameters (uploaded each frame).
+static LaunchParams* s_launchParams_d = nullptr;
+
+// Camera staged on the host (uploaded into LaunchParams at launch time).
+static CameraData s_camera_h = {};
+
+// ── OptiX AI denoiser ───────────────────────────────────────────────
+static OptixDenoiser s_denoiser            = nullptr;
+static CUdeviceptr   s_denoiserState       = 0;
+static size_t        s_denoiserStateSize   = 0;
+static CUdeviceptr   s_denoiserScratch     = 0;
+static size_t        s_denoiserScratchSize = 0;
+static CUdeviceptr   s_denoiserIntensity   = 0;       // single float (HDR intensity)
+static Float3*       s_denoisedBuffer_d    = nullptr; // denoiser output (linear)
+static int           s_denoiserWidth       = 0;
+static int           s_denoiserHeight      = 0;
+static bool          s_denoiserEnabled     = false;
 
 // ---------------------------------------------------------------------------
 //  Render kernel
@@ -596,6 +657,338 @@ __global__ void renderKernel(uint32_t* framebuffer,
 }
 
 // ---------------------------------------------------------------------------
+//  OptiX setup helpers
+// ---------------------------------------------------------------------------
+static void optixLogCallback(unsigned int level, const char* tag, const char* message, void*)
+{
+    fprintf(stderr, "[optix][%u][%s] %s\n", level, tag ? tag : "", message ? message : "");
+}
+
+// Lazily creates the OptiX context, module, program groups, pipeline and SBT.
+// Scene-independent: called once before the first GAS build.
+static void ensureOptixPipeline()
+{
+    if (s_optixReady) return;
+
+    // Make sure a CUDA context exists for OptiX to attach to.
+    CUDA_CHECK(cudaFree(0));
+    OPTIX_CHECK(optixInit());
+
+    OptixDeviceContextOptions ctxOptions = {};
+    ctxOptions.logCallbackFunction = &optixLogCallback;
+    ctxOptions.logCallbackLevel    = 4;
+    OPTIX_CHECK(optixDeviceContextCreate(0 /*current CUDA context*/, &ctxOptions, &s_optixContext));
+
+    // ── Module ──────────────────────────────────────────────────────
+    OptixModuleCompileOptions moduleOptions = {};
+    moduleOptions.maxRegisterCount = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
+    moduleOptions.optLevel         = OPTIX_COMPILE_OPTIMIZATION_DEFAULT;
+    moduleOptions.debugLevel       = OPTIX_COMPILE_DEBUG_LEVEL_NONE;
+
+    OptixPipelineCompileOptions pipelineCompileOptions = {};
+    pipelineCompileOptions.usesMotionBlur                   = 0;
+    pipelineCompileOptions.traversableGraphFlags            = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
+    pipelineCompileOptions.numPayloadValues                 = 2;
+    pipelineCompileOptions.numAttributeValues               = 2;
+    pipelineCompileOptions.exceptionFlags                   = OPTIX_EXCEPTION_FLAG_NONE;
+    pipelineCompileOptions.pipelineLaunchParamsVariableName = "params";
+    pipelineCompileOptions.usesPrimitiveTypeFlags           = OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE;
+
+    char   log[8192];
+    size_t logSize = sizeof(log);
+    OPTIX_CHECK(optixModuleCreate(s_optixContext, &moduleOptions, &pipelineCompileOptions,
+                                  getOptixPtx(), getOptixPtxSize(),
+                                  log, &logSize, &s_optixModule));
+
+    // ── Program groups ──────────────────────────────────────────────
+    OptixProgramGroupOptions pgOptions = {};
+
+    OptixProgramGroupDesc rgDesc = {};
+    rgDesc.kind                     = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
+    rgDesc.raygen.module            = s_optixModule;
+    rgDesc.raygen.entryFunctionName = "__raygen__rg";
+    logSize = sizeof(log);
+    OPTIX_CHECK(optixProgramGroupCreate(s_optixContext, &rgDesc, 1, &pgOptions, log, &logSize, &s_pgRaygen));
+
+    OptixProgramGroupDesc msDesc = {};
+    msDesc.kind                   = OPTIX_PROGRAM_GROUP_KIND_MISS;
+    msDesc.miss.module            = s_optixModule;
+    msDesc.miss.entryFunctionName = "__miss__radiance";
+    logSize = sizeof(log);
+    OPTIX_CHECK(optixProgramGroupCreate(s_optixContext, &msDesc, 1, &pgOptions, log, &logSize, &s_pgMissRadiance));
+
+    OptixProgramGroupDesc msShadowDesc = {};
+    msShadowDesc.kind                   = OPTIX_PROGRAM_GROUP_KIND_MISS;
+    msShadowDesc.miss.module            = s_optixModule;
+    msShadowDesc.miss.entryFunctionName = "__miss__shadow";
+    logSize = sizeof(log);
+    OPTIX_CHECK(optixProgramGroupCreate(s_optixContext, &msShadowDesc, 1, &pgOptions, log, &logSize, &s_pgMissShadow));
+
+    OptixProgramGroupDesc hgDesc = {};
+    hgDesc.kind                         = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+    hgDesc.hitgroup.moduleCH            = s_optixModule;
+    hgDesc.hitgroup.entryFunctionNameCH = "__closesthit__radiance";
+    logSize = sizeof(log);
+    OPTIX_CHECK(optixProgramGroupCreate(s_optixContext, &hgDesc, 1, &pgOptions, log, &logSize, &s_pgHitRadiance));
+
+    // ── Pipeline ────────────────────────────────────────────────────
+    OptixProgramGroup groups[] = { s_pgRaygen, s_pgMissRadiance, s_pgMissShadow, s_pgHitRadiance };
+
+    OptixPipelineLinkOptions linkOptions = {};
+    linkOptions.maxTraceDepth = 2;
+    logSize = sizeof(log);
+    OPTIX_CHECK(optixPipelineCreate(s_optixContext, &pipelineCompileOptions, &linkOptions,
+                                    groups, static_cast<unsigned int>(sizeof(groups) / sizeof(groups[0])),
+                                    log, &logSize, &s_optixPipeline));
+
+    // ── Stack sizes ─────────────────────────────────────────────────
+    OptixStackSizes stackSizes = {};
+    for (OptixProgramGroup pg : groups)
+        OPTIX_CHECK(optixUtilAccumulateStackSizes(pg, &stackSizes, s_optixPipeline));
+
+    unsigned int dcFromTraversal = 0, dcFromState = 0, contStack = 0;
+    OPTIX_CHECK(optixUtilComputeStackSizes(&stackSizes,
+                                           2 /*maxTraceDepth*/, 0 /*maxCCDepth*/, 0 /*maxDCDepth*/,
+                                           &dcFromTraversal, &dcFromState, &contStack));
+    OPTIX_CHECK(optixPipelineSetStackSize(s_optixPipeline,
+                                          dcFromTraversal, dcFromState, contStack,
+                                          1 /*maxTraversableGraphDepth (single GAS)*/));
+
+    // ── Shader binding table ────────────────────────────────────────
+    RayGenSbtRecord rgRecord;
+    OPTIX_CHECK(optixSbtRecordPackHeader(s_pgRaygen, &rgRecord));
+    CUdeviceptr d_raygen = 0;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_raygen), sizeof(RayGenSbtRecord)));
+    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_raygen), &rgRecord,
+                          sizeof(RayGenSbtRecord), cudaMemcpyHostToDevice));
+
+    MissSbtRecord missRecords[RAY_TYPE_COUNT];
+    OPTIX_CHECK(optixSbtRecordPackHeader(s_pgMissRadiance, &missRecords[RAY_TYPE_RADIANCE]));
+    OPTIX_CHECK(optixSbtRecordPackHeader(s_pgMissShadow,   &missRecords[RAY_TYPE_SHADOW]));
+    CUdeviceptr d_miss = 0;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_miss), sizeof(missRecords)));
+    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_miss), missRecords,
+                          sizeof(missRecords), cudaMemcpyHostToDevice));
+
+    HitGroupSbtRecord hitRecords[RAY_TYPE_COUNT];
+    OPTIX_CHECK(optixSbtRecordPackHeader(s_pgHitRadiance, &hitRecords[RAY_TYPE_RADIANCE]));
+    // Shadow rays disable CH/AH, but still index a hitgroup record — reuse the
+    // radiance hitgroup header so the SBT index is always valid.
+    OPTIX_CHECK(optixSbtRecordPackHeader(s_pgHitRadiance, &hitRecords[RAY_TYPE_SHADOW]));
+    CUdeviceptr d_hit = 0;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_hit), sizeof(hitRecords)));
+    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_hit), hitRecords,
+                          sizeof(hitRecords), cudaMemcpyHostToDevice));
+
+    s_sbt.raygenRecord                = d_raygen;
+    s_sbt.missRecordBase              = d_miss;
+    s_sbt.missRecordStrideInBytes     = sizeof(MissSbtRecord);
+    s_sbt.missRecordCount             = RAY_TYPE_COUNT;
+    s_sbt.hitgroupRecordBase          = d_hit;
+    s_sbt.hitgroupRecordStrideInBytes = sizeof(HitGroupSbtRecord);
+    s_sbt.hitgroupRecordCount         = RAY_TYPE_COUNT;
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_launchParams_d), sizeof(LaunchParams)));
+
+    s_optixReady = true;
+    fprintf(stdout, "[optix] Pipeline ready (RT-core acceleration enabled)\n");
+}
+
+// Builds the GAS from the uploaded triangle data (s_triangles_d). The GAS uses
+// RT-core hardware; primitive index == triangle index, so all per-triangle
+// arrays continue to work unchanged.
+static void buildGAS()
+{
+    if (s_triangleCount <= 0 || !s_triangles_d) return;
+
+    const size_t vertexCount = static_cast<size_t>(s_triangleCount) * 3;
+
+    // Pack a contiguous vertex buffer (v0,v1,v2 per triangle) from the
+    // interleaved TriangleData (v0,v1,v2 sit at offset 0 of each struct).
+    if (s_gasVertices_d) { cudaFree(s_gasVertices_d); s_gasVertices_d = nullptr; }
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_gasVertices_d), vertexCount * sizeof(Float3)));
+    CUDA_CHECK(cudaMemcpy2D(s_gasVertices_d, 3 * sizeof(Float3),
+                            s_triangles_d, sizeof(TriangleData),
+                            3 * sizeof(Float3), static_cast<size_t>(s_triangleCount),
+                            cudaMemcpyDeviceToDevice));
+
+    CUdeviceptr d_vertices = reinterpret_cast<CUdeviceptr>(s_gasVertices_d);
+
+    OptixBuildInput buildInput = {};
+    buildInput.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
+    buildInput.triangleArray.vertexFormat        = OPTIX_VERTEX_FORMAT_FLOAT3;
+    buildInput.triangleArray.vertexStrideInBytes = sizeof(Float3);
+    buildInput.triangleArray.numVertices         = static_cast<unsigned int>(vertexCount);
+    buildInput.triangleArray.vertexBuffers       = &d_vertices;
+
+    const unsigned int triangleFlags[1] = { OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT };
+    buildInput.triangleArray.flags        = triangleFlags;
+    buildInput.triangleArray.numSbtRecords = 1;
+
+    OptixAccelBuildOptions accelOptions = {};
+    accelOptions.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION | OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
+    accelOptions.operation  = OPTIX_BUILD_OPERATION_BUILD;
+
+    OptixAccelBufferSizes bufferSizes = {};
+    OPTIX_CHECK(optixAccelComputeMemoryUsage(s_optixContext, &accelOptions, &buildInput, 1, &bufferSizes));
+
+    CUdeviceptr d_temp = 0;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_temp), bufferSizes.tempSizeInBytes));
+
+    CUdeviceptr d_outputUncompacted = 0;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_outputUncompacted), bufferSizes.outputSizeInBytes));
+
+    // Request the compacted size via an emit property.
+    CUdeviceptr d_compactedSize = 0;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_compactedSize), sizeof(uint64_t)));
+    OptixAccelEmitDesc emitDesc = {};
+    emitDesc.type   = OPTIX_PROPERTY_TYPE_COMPACTED_SIZE;
+    emitDesc.result = d_compactedSize;
+
+    OptixTraversableHandle uncompactedHandle = 0;
+    OPTIX_CHECK(optixAccelBuild(s_optixContext, 0 /*stream*/, &accelOptions, &buildInput, 1,
+                                d_temp, bufferSizes.tempSizeInBytes,
+                                d_outputUncompacted, bufferSizes.outputSizeInBytes,
+                                &uncompactedHandle, &emitDesc, 1));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    uint64_t compactedSize = 0;
+    CUDA_CHECK(cudaMemcpy(&compactedSize, reinterpret_cast<void*>(d_compactedSize),
+                          sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+    if (s_gasOutputBuffer) { cudaFree(reinterpret_cast<void*>(s_gasOutputBuffer)); s_gasOutputBuffer = 0; }
+
+    if (compactedSize > 0 && compactedSize < bufferSizes.outputSizeInBytes) {
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_gasOutputBuffer), compactedSize));
+        OPTIX_CHECK(optixAccelCompact(s_optixContext, 0, uncompactedHandle,
+                                      s_gasOutputBuffer, compactedSize, &s_gasHandle));
+        CUDA_CHECK(cudaDeviceSynchronize());
+        cudaFree(reinterpret_cast<void*>(d_outputUncompacted));
+    } else {
+        s_gasOutputBuffer = d_outputUncompacted;
+        s_gasHandle       = uncompactedHandle;
+    }
+
+    cudaFree(reinterpret_cast<void*>(d_temp));
+    cudaFree(reinterpret_cast<void*>(d_compactedSize));
+
+    fprintf(stdout, "[optix] GAS built from %d triangles (%.2f MB)\n",
+            s_triangleCount, static_cast<double>(compactedSize) / (1024.0 * 1024.0));
+}
+
+// ---------------------------------------------------------------------------
+//  Tonemap a linear-space buffer (e.g. the denoiser output) into the RGBA8 PBO.
+//  Uses the identical gamma 2.2 encode as __raygen__rg so denoised and
+//  non-denoised frames match tonally.
+// ---------------------------------------------------------------------------
+__global__ void presentLinearKernel(uint32_t* framebuffer, const Float3* linear,
+                                     int width, int height)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    const int idx = y * width + x;
+    const Float3 c = linear[idx];
+
+    float dr = powf(fmaxf(0.0f, fminf(c.x, 1.0f)), 1.0f / 2.2f);
+    float dg = powf(fmaxf(0.0f, fminf(c.y, 1.0f)), 1.0f / 2.2f);
+    float db = powf(fmaxf(0.0f, fminf(c.z, 1.0f)), 1.0f / 2.2f);
+
+    uint8_t r = static_cast<uint8_t>(dr * 255.0f);
+    uint8_t g = static_cast<uint8_t>(dg * 255.0f);
+    uint8_t b = static_cast<uint8_t>(db * 255.0f);
+    uint8_t a = 255;
+    framebuffer[idx] = (a << 24) | (b << 16) | (g << 8) | r;
+}
+
+// Lazily creates / resizes the denoiser for the given resolution.
+static void ensureDenoiser(int width, int height)
+{
+    if (s_denoiser && s_denoiserWidth == width && s_denoiserHeight == height) return;
+
+    if (s_denoiser)          { optixDenoiserDestroy(s_denoiser); s_denoiser = nullptr; }
+    if (s_denoiserState)     { cudaFree(reinterpret_cast<void*>(s_denoiserState));   s_denoiserState = 0; }
+    if (s_denoiserScratch)   { cudaFree(reinterpret_cast<void*>(s_denoiserScratch)); s_denoiserScratch = 0; }
+    if (s_denoisedBuffer_d)  { cudaFree(s_denoisedBuffer_d); s_denoisedBuffer_d = nullptr; }
+    if (!s_denoiserIntensity) CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_denoiserIntensity), sizeof(float)));
+
+    OptixDenoiserOptions options = {};
+    options.guideAlbedo  = 0;
+    options.guideNormal  = 0;
+    options.denoiseAlpha = OPTIX_DENOISER_ALPHA_MODE_COPY;
+    OPTIX_CHECK(optixDenoiserCreate(s_optixContext, OPTIX_DENOISER_MODEL_KIND_HDR,
+                                    &options, &s_denoiser));
+
+    OptixDenoiserSizes sizes = {};
+    OPTIX_CHECK(optixDenoiserComputeMemoryResources(s_denoiser,
+                static_cast<unsigned int>(width), static_cast<unsigned int>(height), &sizes));
+    s_denoiserStateSize   = sizes.stateSizeInBytes;
+    s_denoiserScratchSize = sizes.withoutOverlapScratchSizeInBytes;
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_denoiserState),   s_denoiserStateSize));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_denoiserScratch), s_denoiserScratchSize));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_denoisedBuffer_d),
+                          sizeof(Float3) * static_cast<size_t>(width) * static_cast<size_t>(height)));
+
+    OPTIX_CHECK(optixDenoiserSetup(s_denoiser, 0,
+                static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+                s_denoiserState, s_denoiserStateSize,
+                s_denoiserScratch, s_denoiserScratchSize));
+
+    s_denoiserWidth  = width;
+    s_denoiserHeight = height;
+}
+
+// Runs the denoiser on the accumulated linear image and tonemaps the result
+// into the mapped PBO (devPtr).
+static void denoiseAndPresent(uint32_t* devPtr, int width, int height)
+{
+    ensureDenoiser(width, height);
+
+    OptixImage2D inputImage = {};
+    inputImage.data              = reinterpret_cast<CUdeviceptr>(s_accumBuffer_d);
+    inputImage.width             = static_cast<unsigned int>(width);
+    inputImage.height            = static_cast<unsigned int>(height);
+    inputImage.rowStrideInBytes  = static_cast<unsigned int>(width * sizeof(Float3));
+    inputImage.pixelStrideInBytes = static_cast<unsigned int>(sizeof(Float3));
+    inputImage.format            = OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    OptixImage2D outputImage = inputImage;
+    outputImage.data = reinterpret_cast<CUdeviceptr>(s_denoisedBuffer_d);
+
+    OPTIX_CHECK(optixDenoiserComputeIntensity(s_denoiser, 0, &inputImage,
+                s_denoiserIntensity, s_denoiserScratch, s_denoiserScratchSize));
+
+    OptixDenoiserParams params = {};
+    params.hdrIntensity = s_denoiserIntensity;
+    params.blendFactor  = 0.0f;
+
+    OptixDenoiserGuideLayer guideLayer = {};
+    OptixDenoiserLayer layer = {};
+    layer.input  = inputImage;
+    layer.output = outputImage;
+
+    OPTIX_CHECK(optixDenoiserInvoke(s_denoiser, 0, &params,
+                s_denoiserState, s_denoiserStateSize,
+                &guideLayer, &layer, 1, 0, 0,
+                s_denoiserScratch, s_denoiserScratchSize));
+
+    dim3 block(16, 16);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    presentLinearKernel<<<grid, block>>>(devPtr, s_denoisedBuffer_d, width, height);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+bool cudaToggleDenoiser()
+{
+    s_denoiserEnabled = !s_denoiserEnabled;
+    fprintf(stdout, "[denoise] %s\n", s_denoiserEnabled ? "ON" : "OFF");
+    return s_denoiserEnabled;
+}
+
+// ---------------------------------------------------------------------------
 //  Host API implementation
 // ---------------------------------------------------------------------------
 
@@ -655,7 +1048,9 @@ void cudaInit(const TriangleData& tri, const Float3& color,
 
 void cudaInitCamera(const CameraData& camera)
 {
-    CUDA_CHECK(cudaMemcpyToSymbol(d_camera, &camera, sizeof(CameraData)));
+    // Stage the camera on the host; it is copied into LaunchParams each frame.
+    // (The OptiX module reads the camera from launch params, not a __constant__.)
+    s_camera_h = camera;
 }
 
 void cudaInitTriangleEmission(const Float3* triangleEmission, int triangleCount)
@@ -793,24 +1188,15 @@ void cudaInitBsdfs(const BsdfData* bsdfs, int bsdfCount,
                           cudaMemcpyHostToDevice));
 }
 
-void cudaInitBVH(const LinearBVHNode* nodes, int nodeCount,
-                 const int* primIndices, int primCount)
+void cudaInitBVH(const LinearBVHNode* /*nodes*/, int /*nodeCount*/,
+                 const int* /*primIndices*/, int /*primCount*/)
 {
-    if (s_bvhNodes_d)       { cudaFree(s_bvhNodes_d);       s_bvhNodes_d = nullptr; }
-    if (s_bvhPrimIndices_d) { cudaFree(s_bvhPrimIndices_d); s_bvhPrimIndices_d = nullptr; }
-    s_bvhNodeCount = 0;
-
-    if (!nodes || nodeCount <= 0 || !primIndices || primCount <= 0) return;
-
-    s_bvhNodeCount = nodeCount;
-
-    CUDA_CHECK(cudaMalloc(&s_bvhNodes_d,       sizeof(LinearBVHNode) * static_cast<size_t>(nodeCount)));
-    CUDA_CHECK(cudaMemcpy(s_bvhNodes_d, nodes, sizeof(LinearBVHNode) * static_cast<size_t>(nodeCount),
-                          cudaMemcpyHostToDevice));
-
-    CUDA_CHECK(cudaMalloc(&s_bvhPrimIndices_d,            sizeof(int) * static_cast<size_t>(primCount)));
-    CUDA_CHECK(cudaMemcpy(s_bvhPrimIndices_d, primIndices, sizeof(int) * static_cast<size_t>(primCount),
-                          cudaMemcpyHostToDevice));
+    // The CPU-built LinearBVH is no longer used. Intersection now runs on the
+    // RT cores via an OptiX GAS. We initialise the OptiX pipeline (once) and
+    // build the GAS directly from the triangle data uploaded by cudaInitScene.
+    // The previous LinearBVHNode arguments are intentionally ignored.
+    ensureOptixPipeline();
+    buildGAS();
 }
 
 void cudaInitSpotlights(const SpotlightData* spotlights, int spotlightCount)
@@ -945,31 +1331,60 @@ void cudaRender(int imageWidth, int imageHeight)
     CUDA_CHECK(cudaGraphicsResourceGetMappedPointer(
         reinterpret_cast<void**>(&devPtr), &bufSize, s_pboResource));
 
-    // Launch kernel – 16×16 threads per block
-    dim3 block(16, 16);
-    dim3 grid((imageWidth  + block.x - 1) / block.x,
-              (imageHeight + block.y - 1) / block.y);
+    // Fill the launch parameters and upload to the device.
+    LaunchParams lp = {};
+    lp.framebuffer          = devPtr;
+    lp.accumBuffer          = s_accumBuffer_d;
+    lp.width                = imageWidth;
+    lp.height               = imageHeight;
+    lp.launchOffsetY        = 0;
+    lp.frameIndex           = s_frameIndex;
+    lp.camera               = s_camera_h;
+    lp.handle               = s_gasHandle;
+    lp.triangles            = s_triangles_d;
+    lp.triangleCount        = s_triangleCount;
+    lp.bsdfs                = s_bsdfs_d;
+    lp.bsdfCount            = s_bsdfCount;
+    lp.triangleBsdfIds      = s_triangleBsdfIds_d;
+    lp.triangleMaterialIds  = s_triangleMaterialIds_d;
+    lp.triangleEmitterFlags = s_triangleEmitterFlags_d;
+    lp.triangleEmission     = s_triangleEmission_d;
+    lp.emitters             = s_emitters_d;
+    lp.emitterCount         = s_emitterCount;
+    lp.emitterTriIndices    = s_emitterTriIndices_d;
+    lp.emitterTriCdf        = s_emitterTriCdf_d;
+    lp.sceneEmitterCdf      = s_sceneEmitterCdf_d;
+    lp.spotlights           = s_spotlights_d;
+    lp.spotlightCount       = s_spotlightCount;
+    lp.texObjects           = s_texObjects_d;
+    lp.textureCount         = s_textureCount;
 
-    renderKernel<<<grid, block>>>(devPtr, s_accumBuffer_d,
-                                   imageWidth, imageHeight,
-                                   s_triangles_d, s_triangleCount,
-                                   s_materials_d,
-                                   s_triangleMaterialIds_d,
-                                   s_materialCount,
-                                   s_triangleEmitterFlags_d,
-                                   s_triangleEmission_d,
-                                   s_emitters_d, s_emitterCount,
-                                   s_emitterTriIndices_d,
-                                   s_emitterTriCdf_d,
-                                   s_sceneEmitterCdf_d,
-                                   s_bsdfs_d, s_bsdfCount,
-                                   s_triangleBsdfIds_d,
-                                   s_bvhNodes_d, s_bvhNodeCount,
-                                   s_bvhPrimIndices_d,
-                                   s_spotlights_d, s_spotlightCount,
-                                   s_texObjects_d, s_textureCount,
-                                   s_frameIndex++);
-    CUDA_CHECK(cudaGetLastError());
+    // Render the frame in horizontal row-band tiles. Each optixLaunch covers
+    // only TILE_HEIGHT scanlines so that no single GPU command runs long enough
+    // to trip the Windows display-driver watchdog (TDR). Output is identical to
+    // a single full-frame launch — only the launch granularity changes.
+    constexpr int TILE_HEIGHT = 64;
+    for (int y0 = 0; y0 < imageHeight; y0 += TILE_HEIGHT) {
+        const int rows = (imageHeight - y0 < TILE_HEIGHT) ? (imageHeight - y0) : TILE_HEIGHT;
+
+        lp.launchOffsetY = y0;
+        CUDA_CHECK(cudaMemcpy(s_launchParams_d, &lp, sizeof(LaunchParams), cudaMemcpyHostToDevice));
+
+        OPTIX_CHECK(optixLaunch(s_optixPipeline, 0 /*stream*/,
+                                reinterpret_cast<CUdeviceptr>(s_launchParams_d),
+                                sizeof(LaunchParams), &s_sbt,
+                                static_cast<unsigned int>(imageWidth),
+                                static_cast<unsigned int>(rows), 1));
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
+    ++s_frameIndex;
+
+    // Optional: denoise the accumulated image and tonemap into the PBO,
+    // overwriting the raygen's direct write.
+    if (s_denoiserEnabled) {
+        denoiseAndPresent(devPtr, imageWidth, imageHeight);
+    }
 
     // Unmap so OpenGL can read the PBO
     CUDA_CHECK(cudaGraphicsUnmapResources(1, &s_pboResource, 0));
@@ -1075,4 +1490,29 @@ void cudaCleanup()
     s_cuArrays.clear();
     if (s_texObjects_d) { cudaFree(s_texObjects_d); s_texObjects_d = nullptr; }
     s_textureCount = 0;
+
+    // ── OptiX teardown ──────────────────────────────────────────────
+    if (s_sbt.raygenRecord)     { cudaFree(reinterpret_cast<void*>(s_sbt.raygenRecord));     s_sbt.raygenRecord = 0; }
+    if (s_sbt.missRecordBase)   { cudaFree(reinterpret_cast<void*>(s_sbt.missRecordBase));   s_sbt.missRecordBase = 0; }
+    if (s_sbt.hitgroupRecordBase){ cudaFree(reinterpret_cast<void*>(s_sbt.hitgroupRecordBase)); s_sbt.hitgroupRecordBase = 0; }
+    if (s_launchParams_d)       { cudaFree(s_launchParams_d); s_launchParams_d = nullptr; }
+    if (s_gasOutputBuffer)      { cudaFree(reinterpret_cast<void*>(s_gasOutputBuffer)); s_gasOutputBuffer = 0; }
+    if (s_gasVertices_d)        { cudaFree(s_gasVertices_d); s_gasVertices_d = nullptr; }
+    s_gasHandle = 0;
+
+    if (s_denoiser)         { optixDenoiserDestroy(s_denoiser); s_denoiser = nullptr; }
+    if (s_denoiserState)    { cudaFree(reinterpret_cast<void*>(s_denoiserState));   s_denoiserState = 0; }
+    if (s_denoiserScratch)  { cudaFree(reinterpret_cast<void*>(s_denoiserScratch)); s_denoiserScratch = 0; }
+    if (s_denoiserIntensity){ cudaFree(reinterpret_cast<void*>(s_denoiserIntensity)); s_denoiserIntensity = 0; }
+    if (s_denoisedBuffer_d) { cudaFree(s_denoisedBuffer_d); s_denoisedBuffer_d = nullptr; }
+    s_denoiserWidth = 0; s_denoiserHeight = 0;
+
+    if (s_optixPipeline)  { optixPipelineDestroy(s_optixPipeline);   s_optixPipeline = nullptr; }
+    if (s_pgRaygen)       { optixProgramGroupDestroy(s_pgRaygen);    s_pgRaygen = nullptr; }
+    if (s_pgMissRadiance) { optixProgramGroupDestroy(s_pgMissRadiance); s_pgMissRadiance = nullptr; }
+    if (s_pgMissShadow)   { optixProgramGroupDestroy(s_pgMissShadow);   s_pgMissShadow = nullptr; }
+    if (s_pgHitRadiance)  { optixProgramGroupDestroy(s_pgHitRadiance);  s_pgHitRadiance = nullptr; }
+    if (s_optixModule)    { optixModuleDestroy(s_optixModule);       s_optixModule = nullptr; }
+    if (s_optixContext)   { optixDeviceContextDestroy(s_optixContext); s_optixContext = nullptr; }
+    s_optixReady = false;
 }
