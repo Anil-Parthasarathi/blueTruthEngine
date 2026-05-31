@@ -6,7 +6,7 @@
 
     <!-- Disney materials -->
     <bsdf name="blueDiamond" type="disney"
-          base_colorR="0.2" base_colorG="0.2" base_colorB="1.0"
+          base_colorR="0.85" base_colorG="0.92" base_colorB="0.95"
           roughness="0.03" metallic="0.0" specular="1.0"
           specular_transmission="0.95" specular_tint="0.15"
           sheen="0.0" sheen_tint="0.5" subsurface="0.0"
@@ -27,11 +27,21 @@
           anisotropic="0.0" clearcoat="0.0" clearcoat_gloss="1.0"
           eta="1.5" />
 
+     <bsdf name="marble" type="disney"
+          base_colorR="0.92" base_colorG="0.91" base_colorB="0.89"
+          roughness="0.15" metallic="0.0" specular="0.5"
+          specular_transmission="0.0" specular_tint="0.0"
+          sheen="0.0" sheen_tint="0.0" subsurface="0.4"
+          anisotropic="0.0" clearcoat="0.1" clearcoat_gloss="0.9"
+          eta="1.49" />
+
+
+
     <!-- Materials reference a BSDF.
          albedoTexture is optional — omit it (or leave empty) for untextured materials;
          the engine will use the BSDF base_color / albedo parameters directly. -->
     <material name="white"        bsdf="whiteDiffuse" />
-    <material name="floor"        albedoTexture="assets/checkerboard.png" bsdf="whiteDiffuse" />
+    <material name="floor"        albedoTexture="assets/checkerboard.jpg" bsdf="marble" />
     <material name="red"          bsdf="redDiffuse" />
     <material name="green"        bsdf="greenDiffuse" />
     <material name="pinkDiamondM" bsdf="blueDiamond" />
@@ -47,29 +57,29 @@
     <!-- Ceiling area light — dimmed so the spotlight is the dominant source -->
     <mesh filename="assets/light.obj"
           material="white"
-          isEmitter="true" radianceR="2.5" radianceG="2.5" radianceB="2.5" />
+          isEmitter="true" radianceR="18" radianceG="18" radianceB="18" />
 
     <!-- Objects -->
     <mesh filename="assets/sphere1.obj" material="goldM" />
     <mesh filename="assets/sphere2.obj" material="silverM"
           posX="0.05" posY="-0.05" posZ="-0.20" />
-    <mesh filename="assets/bunny.obj"
+    <mesh filename="assets/horse.obj"
           material="pinkDiamondM"
-          scaleX="4" scaleY="4" scaleZ="4"
+          scaleX="0.4" scaleY="0.4" scaleZ="0.4"
           rotY="15"
           posX="0.06" posY="0.37" posZ="-0.10" />
 
     <!-- Spotlight: positioned just below the ceiling light, aimed at the center
          of the back wall (0, 0.8, -1.04).  Direction vector is from the light
          position to the target, which works out to roughly (0, -0.53, -1) normalized. -->
-    <spotlight
+    <!-- spotlight
         posX="0.0"  posY="1.55" posZ="-0.03"
         dirX="0.0"  dirY="-0.53" dirZ="-1.0"
         radianceR="1.0" radianceG="0.92" radianceB="0.78"
         intensity="4.0"
         innerConeAngle="22.0"
         outerConeAngle="38.0"
-    />
+    / -->
 
     <!-- Camera used for ray generation -->
     <camera
@@ -79,5 +89,5 @@
         fovY="40"
     />
 
-    <window width="1280" height="720" />
+    <window width="800" height="600" />
 </scene>

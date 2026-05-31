@@ -10,6 +10,23 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 # Target RTX 4080 SUPER  (SM 8.9)
 set(CMAKE_CUDA_ARCHITECTURES 89)
 
+# ── OptiX SDK (RT-core acceleration) ────────────────────────────────
+# Header-only API: no library to link, the implementation is loaded from the
+# display driver at runtime via optixInit().
+set(OPTIX_INSTALL_DIR "C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.1.0"
+    CACHE PATH "Path to the NVIDIA OptiX SDK install directory")
+set(OPTIX_INCLUDE_DIR "${OPTIX_INSTALL_DIR}/include")
+if(NOT EXISTS "${OPTIX_INCLUDE_DIR}/optix.h")
+    message(FATAL_ERROR "OptiX SDK not found. Set OPTIX_INSTALL_DIR (looked in ${OPTIX_INSTALL_DIR}).")
+endif()
+
+# Locate bin2c (ships next to nvcc) for embedding the compiled OptiX PTX.
+get_filename_component(CUDA_BIN_DIR "${CMAKE_CUDA_COMPILER}" DIRECTORY)
+find_program(BIN2C bin2c HINTS "${CUDA_BIN_DIR}")
+if(NOT BIN2C)
+    message(FATAL_ERROR "bin2c not found next to nvcc (${CUDA_BIN_DIR}).")
+endif()
+
 # ── Third-party: GLFW (windowing) ───────────────────────────────────
 include(FetchContent)
 
@@ -54,16 +71,53 @@ target_include_directories(tinyobjloader INTERFACE
     ${CMAKE_SOURCE_DIR}/external/tinyobjloader
 )
 
+# ── OptiX device programs → PTX → embedded byte array ────────────────
+# Compile src/optix_programs.cu to PTX (object library with PTX compilation),
+# then embed the PTX into a C array via bin2c so it can be loaded at runtime
+# without depending on a file path.
+add_library(optix_programs OBJECT src/optix_programs.cu)
+set_target_properties(optix_programs PROPERTIES
+    CUDA_PTX_COMPILATION ON
+    CUDA_ARCHITECTURES 89
+)
+target_include_directories(optix_programs PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${OPTIX_INCLUDE_DIR}
+)
+target_compile_options(optix_programs PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+)
+
+set(EMBEDDED_PTX_C "${CMAKE_BINARY_DIR}/embedded_optix_ptx.c")
+add_custom_command(
+    OUTPUT  "${EMBEDDED_PTX_C}"
+    COMMAND ${CMAKE_COMMAND}
+            -DBIN2C=${BIN2C}
+            "-DPTX_FILE=$<TARGET_OBJECTS:optix_programs>"
+            -DOUTPUT=${EMBEDDED_PTX_C}
+            -DVAR_NAME=optixProgramsPtx
+            -P "${CMAKE_SOURCE_DIR}/cmake/bin2c_wrapper.cmake"
+    DEPENDS optix_programs "$<TARGET_OBJECTS:optix_programs>"
+    VERBATIM
+    COMMENT "Embedding OptiX PTX into ${EMBEDDED_PTX_C}"
+)
+add_custom_target(embed_optix_ptx DEPENDS "${EMBEDDED_PTX_C}")
+
 # ── RedTruthEngine executable ────────────────────────────────────────
 add_executable(${PROJECT_NAME}
     src/main.cpp
     src/render_kernel.cu
     src/scene.cpp
     src/bvh_builder.cpp
+    src/optix_ptx_embed.cpp
 )
+
+add_dependencies(${PROJECT_NAME} embed_optix_ptx)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+    ${OPTIX_INCLUDE_DIR}
+    ${CMAKE_BINARY_DIR}          # for the generated embedded_optix_ptx.c
 )
 
 # Enable separable compilation so future .cu files can call device funcs

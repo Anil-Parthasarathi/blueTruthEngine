@@ -180,5 +180,10 @@ void cudaResetAccumulation(int imageWidth, int imageHeight);
 /// mapped PBO.  Call this every frame.
 void cudaRender(int imageWidth, int imageHeight);
 
+/// Toggle the OptiX AI denoiser on/off. When enabled, the accumulated linear
+/// image is denoised (HDR model) each frame before being tonemapped to the PBO.
+/// Returns the new enabled state.
+bool cudaToggleDenoiser();
+
 /// Unregister the PBO and free device memory.  Call before exit.
 void cudaCleanup();
