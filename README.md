@@ -2,6 +2,8 @@
 
 A CUDA + OpenGL rendering engine. CUDA writes pixels into a Pixel Buffer Object; OpenGL displays it as a fullscreen quad.
 
+<img width="800" height="600" alt="screenshot_0000" src="https://github.com/user-attachments/assets/c2b431d4-4758-436a-b831-6ab988bb66f8" />
+
 <img width="1280" height="720" alt="anilRenderWhiteFloor" src="https://github.com/user-attachments/assets/c96d0eff-54d5-48fb-8ef2-fbcf77a7a775" />
 
 
