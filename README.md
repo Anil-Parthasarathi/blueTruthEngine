@@ -2,7 +2,7 @@
 
 A CUDA + OpenGL rendering engine. CUDA writes pixels into a Pixel Buffer Object; OpenGL displays it as a fullscreen quad.
 
-<div align="center" <img width="800" height="600" alt="screenshot_0000" src="https://github.com/user-attachments/assets/c2b431d4-4758-436a-b831-6ab988bb66f8" />>
+<div  align="center" > <img width="800" height="600" alt="screenshot_0000" src="https://github.com/user-attachments/assets/c2b431d4-4758-436a-b831-6ab988bb66f8" /> </div>
 
 <img width="1728" height="1118" alt="completePokemonShowcase" src="https://github.com/user-attachments/assets/2f92fd1b-bf7c-4129-8f7f-e63d92cd9e2b" />
 
