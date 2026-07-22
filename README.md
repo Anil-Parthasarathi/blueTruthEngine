@@ -1,4 +1,4 @@
-# Blue Truth Project
+# Blue Truth Engine
 
 A CUDA + OpenGL rendering engine. CUDA writes pixels into a Pixel Buffer Object; OpenGL displays it as a fullscreen quad.
 
@@ -34,7 +34,7 @@ $cmake = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\Co
 ## Run
 
 ```powershell
-.\build\Release\RedTruthEngine.exe
+.\build\Release\BlueTruthEngine.exe
 ```
 
 Press **Escape** or close the window to exit.
