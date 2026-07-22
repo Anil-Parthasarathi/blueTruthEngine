@@ -1,4 +1,4 @@
-# Blue Truth Engine
+# Blue Truth Project
 
 A CUDA + OpenGL rendering engine. CUDA writes pixels into a Pixel Buffer Object; OpenGL displays it as a fullscreen quad.
 
