@@ -15,7 +15,8 @@
 //  header, so the layout MUST stay identical on both sides.
 // ---------------------------------------------------------------------------
 
-#include "render_kernel.h"   // Float3, TriangleData, BsdfData, EmitterData, ...
+#include "render_kernel.h"             // Float3, TriangleData, BsdfData, EmitterData, ...
+#include "wavefront/wavefront_buffers.h" // WavefrontSoA — no optix.h dependency
 
 #include <optix.h>           // OptixTraversableHandle
 #include <cuda_runtime.h>    // cudaTextureObject_t
@@ -71,6 +72,11 @@ struct LaunchParams {
     // ── Textures (one CUDA texture object handle per material) ───────
     const cudaTextureObject_t* texObjects;
     int                        textureCount;
+
+    // ── Wavefront mode SoA ──────────────────────────────────────────
+    // All pointers are null/zero in megakernel mode.
+    // Populated each frame by cudaRenderWavefront() before optixLaunch.
+    WavefrontSoA wf;
 };
 
 // SBT record headers.  We carry no per-record payload data (everything lives

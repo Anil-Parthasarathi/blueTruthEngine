@@ -1,0 +1,39 @@
+﻿MSBuild version 17.14.23+b0019275e for .NET Framework
+
+  glad.vcxproj -> C:\Users\Anil\RedTruth\blueTruthEngine\build\Release\glad.lib
+  glfw.vcxproj -> C:\Users\Anil\RedTruth\blueTruthEngine\build\_deps\glfw-build\src\Release\glfw3.lib
+  glm.vcxproj -> C:\Users\Anil\RedTruth\blueTruthEngine\build\_deps\glm-build\glm\Release\glm.lib
+  Compiling CUDA source file ..\src\render_kernel.cu...
+  
+  C:\Users\Anil\RedTruth\blueTruthEngine\build>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\nvcc.exe"  --use-local-env -ccbin "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64" -x cu -rdc=true  -IC:\Users\Anil\RedTruth\blueTruthEngine\include -IC:\Users\Anil\RedTruth\blueTruthEngine\external\glad\include -I"C:\Users\Anil\RedTruth\blueTruthEngine\build\_deps\glfw-src\include" -I"C:\Users\Anil\RedTruth\blueTruthEngine\build\_deps\glm-src" -IC:\Users\Anil\RedTruth\blueTruthEngine\external\stb -IC:\Users\Anil\RedTruth\blueTruthEngine\external\tinyobjloader -I"C:\ProgramData\NVIDIA Corporation\OptiX SDK 9.1.0\include" -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\include"     --keep-dir RedTruthEngine\x64\Release  -maxrregcount=0    --machine 64 --compile -cudart static -std=c++17 --generate-code=arch=compute_89,code=[compute_89,sm_89] -Xcompiler="/EHsc -Ob2"   -D_WINDOWS -DNDEBUG -D"CMAKE_INTDIR=\"Release\"" -D_MBCS -DWIN32 -D_WINDOWS -DNDEBUG -D"CMAKE_INTDIR=\"Release\"" -Xcompiler "/EHsc /W1 /nologo /O2 /FS   /MD " -Xcompiler "/FdRedTruthEngine.dir\Release\vc143.pdb" -o RedTruthEngine.dir\Release\render_kernel.obj "C:\Users\Anil\RedTruth\blueTruthEngine\src\render_kernel.cu" 
+C:/Users/Anil/RedTruth/blueTruthEngine/include\render_kernel.h(40): error : identifier "CameraData" is undefined [C:\Users\Anil\RedTruth\blueTruthEngine\build\RedTruthEngine.vcxproj]
+        CameraData camera;
+        ^
+  
+C:/Users/Anil/RedTruth/blueTruthEngine/include\render_kernel.h(48): error : identifier "EmitterData" is undefined [C:\Users\Anil\RedTruth\blueTruthEngine\build\RedTruthEngine.vcxproj]
+        const EmitterData* emitters;
+              ^
+  
+C:/Users/Anil/RedTruth/blueTruthEngine/include\render_kernel.h(54): error : identifier "BsdfData" is undefined [C:\Users\Anil\RedTruth\blueTruthEngine\build\RedTruthEngine.vcxproj]
+        const BsdfData* bsdfs;
+              ^
+  
+C:\Users\Anil\RedTruth\blueTruthEngine\src\render_kernel.cu(267): error : identifier "optixModuleCreateFromPTX" is undefined [C:\Users\Anil\RedTruth\blueTruthEngine\build\RedTruthEngine.vcxproj]
+            do { OptixResult res = (optixModuleCreateFromPTX(s_optixContext, &moduleOptions, &pipelineOptions, ptxCode.data(), ptxCode.size(), log, &sizeof_log, &s_module)); if (res != OPTIX_SUCCESS) { fprintf((__acrt_iob_func(2)), "OptiX error at %s:%d ΓÇô %s\n", "C:\\Users\\Anil\\RedTruth\\blueTruthEngine\\src\\render_kernel.cu", 267, optixGetErrorName(res)); exit(1); } } while (0);
+                                    ^
+  
+C:\Users\Anil\RedTruth\blueTruthEngine\src\render_kernel.cu(300): error : expected a type specifier [C:\Users\Anil\RedTruth\blueTruthEngine\build\RedTruthEngine.vcxproj]
+            struct EmptyRecord { __ALIGN__(16ull) char header[( (size_t)32 )]; };
+                                           ^
+  
+C:\Users\Anil\RedTruth\blueTruthEngine\src\render_kernel.cu(300): error : explicit type is missing ("int" assumed) [C:\Users\Anil\RedTruth\blueTruthEngine\build\RedTruthEngine.vcxproj]
+            struct EmptyRecord { __ALIGN__(16ull) char header[( (size_t)32 )]; };
+                                 ^
+  
+C:\Users\Anil\RedTruth\blueTruthEngine\src\render_kernel.cu(300): error : expected a ";" [C:\Users\Anil\RedTruth\blueTruthEngine\build\RedTruthEngine.vcxproj]
+            struct EmptyRecord { __ALIGN__(16ull) char header[( (size_t)32 )]; };
+                                                  ^
+  
+  7 errors detected in the compilation of "C:/Users/Anil/RedTruth/blueTruthEngine/src/render_kernel.cu".
+  render_kernel.cu
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Microsoft\VC\v170\BuildCustomizations\CUDA 13.2.targets(803,9): error MSB3721: The command ""C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\nvcc.exe"  --use-local-env -ccbin "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64" -x cu -rdc=true  -IC:\Users\Anil\RedTruth\blueTruthEngine\include -IC:\Users\Anil\RedTruth\blueTruthEngine\external\glad\include -I"C:\Users\Anil\RedTruth\blueTruthEngine\build\_deps\glfw-src\include" -I"C:\Users\Anil\RedTruth\blueTruthEngine\build\_deps\glm-src" -IC:\Users\Anil\RedTruth\blueTruthEngine\external\stb -IC:\Users\Anil\RedTruth\blueTruthEngine\external\tinyobjloader -I"C:\ProgramData\NVIDIA Corporation\OptiX SDK 9.1.0\include" -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\include"     --keep-dir RedTruthEngine\x64\Release  -maxrregcount=0    --machine 64 --compile -cudart static -std=c++17 --generate-code=arch=compute_89,code=[compute_89,sm_89] -Xcompiler="/EHsc -Ob2"   -D_WINDOWS -DNDEBUG -D"CMAKE_INTDIR=\"Release\"" -D_MBCS -DWIN32 -D_WINDOWS -DNDEBUG -D"CMAKE_INTDIR=\"Release\"" -Xcompiler "/EHsc /W1 /nologo /O2 /FS   /MD " -Xcompiler "/FdRedTruthEngine.dir\Release\vc143.pdb" -o RedTruthEngine.dir\Release\render_kernel.obj "C:\Users\Anil\RedTruth\blueTruthEngine\src\render_kernel.cu"" exited with code 2. [C:\Users\Anil\RedTruth\blueTruthEngine\build\RedTruthEngine.vcxproj]

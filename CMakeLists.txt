@@ -75,7 +75,11 @@ target_include_directories(tinyobjloader INTERFACE
 # Compile src/optix_programs.cu to PTX (object library with PTX compilation),
 # then embed the PTX into a C array via bin2c so it can be loaded at runtime
 # without depending on a file path.
-add_library(optix_programs OBJECT src/optix_programs.cu)
+add_library(optix_programs OBJECT
+    src/optix_programs.cu
+    src/wavefront/ray_extend.cu    # __raygen__wf_extend  (compiled to PTX)
+    src/wavefront/ray_connect.cu   # __raygen__wf_shadow  (compiled to PTX)
+)
 set_target_properties(optix_programs PROPERTIES
     CUDA_PTX_COMPILATION ON
     CUDA_ARCHITECTURES 89
@@ -110,6 +114,8 @@ add_executable(${PROJECT_NAME}
     src/scene.cpp
     src/bvh_builder.cpp
     src/optix_ptx_embed.cpp
+    src/wavefront/ray_generate.cu  # wfGenerate kernel  (regular CUDA, linked to exe)
+    src/wavefront/ray_shade.cu     # wfShade kernel     (regular CUDA, linked to exe)
 )
 
 add_dependencies(${PROJECT_NAME} embed_optix_ptx)

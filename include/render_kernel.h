@@ -185,5 +185,21 @@ void cudaRender(int imageWidth, int imageHeight);
 /// Returns the new enabled state.
 bool cudaToggleDenoiser();
 
+// ---------------------------------------------------------------------------
+// Render mode — switch between the legacy megakernel and the new wavefront
+// pipeline.  Call cudaSetRenderMode() once at startup (see main.cpp).
+// ---------------------------------------------------------------------------
+
+enum class RenderMode {
+    Megakernel,   // existing OptiX raygen path (__raygen__rg)
+    Wavefront,    // per-bounce CUDA kernel loop (wfGenerate → extend → shade → connect)
+};
+
+/// Set the active rendering mode.  Takes effect on the next cudaRender() call.
+void cudaSetRenderMode(RenderMode mode);
+
+/// Return the currently active rendering mode.
+RenderMode cudaGetRenderMode();
+
 /// Unregister the PBO and free device memory.  Call before exit.
 void cudaCleanup();

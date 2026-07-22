@@ -1,0 +1,16 @@
+[scene] Loaded scene from "assets\scene.xml"
+        meshes    = 8
+        materials = 7
+        emitters  = 0
+        window    = 800 x 600
+[gl]   OpenGL 4.6 loaded
+[tex]  Average colour from "assets/checkerboard.jpg": (0.333625, 0.294573, 0.263922)
+[texture] Loaded "assets/checkerboard.jpg" (2048×2048)
+[texture] Uploaded material 1: 2048×2048
+[mesh] Loaded 2 triangles from "assets/floor.obj"
+[mesh] Loaded 4 triangles from "assets/walls.obj"
+[mesh] Loaded 2 triangles from "assets/leftwall.obj"
+[mesh] Loaded 2 triangles from "assets/rightwall.obj"
+[mesh] Loaded 2 triangles from "assets/light.obj"
+[mesh] Loaded 3968 triangles from "assets/sphere1.obj"
+[mesh] Loaded 3968 triangles from "assets/sphere2.obj"

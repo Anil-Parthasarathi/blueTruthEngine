@@ -41,6 +41,16 @@
 static int  g_windowWidth   = 1280;
 static int  g_windowHeight  = 720;
 
+// ---------------------------------------------------------------------------
+//  Render mode selector — edit this to switch between implementations.
+//
+//    true  → wavefront pipeline  (wfGenerate → extend → shade → connect loop)
+//    false → megakernel pipeline (single OptiX __raygen__rg per frame)
+//
+//  This is read once at startup; changing it requires a recompile.
+// ---------------------------------------------------------------------------
+static constexpr bool USE_WAVEFRONT = true;
+
 // Set to true whenever the camera, geometry, or lighting changes so the
 // accumulation buffer is cleared before the next frame.  Wire this up to
 // any animation / camera-movement code you add in the future.
@@ -935,6 +945,9 @@ int main(int argc, char** argv)
     }
 
     cudaRegisterPBO(g_pbo);
+
+    // Apply the render mode chosen at the top of this file.
+    cudaSetRenderMode(USE_WAVEFRONT ? RenderMode::Wavefront : RenderMode::Megakernel);
 
     std::cout << "[cuda] Ready – entering render loop\n";
 

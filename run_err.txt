@@ -1,0 +1,149 @@
+[tinyobj warn] material [ 'floor' ] not found in .mtl
+
+[tinyobj warn] Material file [ walls.mtl ] not found in a path : 
+Failed to load material file(s). Use default material.
+material [ 'ceiling' ] not found in .mtl
+material [ 'backWall' ] not found in .mtl
+Vertex texcoord indices out of bounds (line 24.)
+
+
+[tinyobj warn] Material file [ leftwall.mtl ] not found in a path : 
+Failed to load material file(s). Use default material.
+material [ 'leftWall' ] not found in .mtl
+
+[tinyobj warn] Material file [ rightwall.mtl ] not found in a path : 
+Failed to load material file(s). Use default material.
+material [ 'rightWall' ] not found in .mtl
+
+[tinyobj warn] Material file [ light.mtl ] not found in a path : 
+Failed to load material file(s). Use default material.
+material [ 'light' ] not found in .mtl
+
+[tinyobj warn] Material file [ Untitled.mtl ] not found in a path : 
+Failed to load material file(s). Use default material.
+material [ 'Material0.003' ] not found in .mtl
+
+[optix][4][KNOBS] All knobs on default.
+
+[optix][4][DISKCACHE] Opened database: "C:\Users\Anil\AppData\Local\NVIDIA\OptixCache\optix7cache.db"
+[optix][4][DISKCACHE]     Cache data size: "211.5 KiB"
+[optix][4][DISKCACHE] Cache miss for key: ptx-495412-key84cfdd4823178665fdc7af522eda8dbd-sm_89-rtc1-drv591.86
+
+[optix][4][COMPILER] Info: Pipeline parameter "params" size is 232 bytes
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+Warning: Program is doing double precision computations. No source location available. The input PTX may not contain debug information (nvcc option: -lineinfo), OptixModuleCompileOptions::debugLevel set to OPTIX_COMPILE_DEBUG_LEVEL_NONE, or no useful information is present for the current block.
+
+[optix][4][COMPILER] Function properties for __closesthit__radiance__ptID____0x3a804528f30390bb
+	register count                  :   108
+	direct stack size (bytes)       :     0
+	direct spills (bytes)           :     0
+	continuation stack size (bytes) :     0
+	continuation spills (bytes)     :     0
+
+[optix][4][COMPILER] Function properties for __miss__radiance__ptID____0x3a804528f30390bb
+	register count                  :   108
+	direct stack size (bytes)       :     0
+	direct spills (bytes)           :     0
+	continuation stack size (bytes) :     0
+	continuation spills (bytes)     :     0
+
+[optix][4][COMPILER] Function properties for __miss__shadow__ptID____0x3a804528f30390bb
+	register count                  :   108
+	direct stack size (bytes)       :     0
+	direct spills (bytes)           :     0
+	continuation stack size (bytes) :     0
+	continuation spills (bytes)     :     0
+
+[optix][4][COMPILER] Info: Module Statistics
+	payload values        :          2
+	attribute values      :          0
+Info: Properties for entry function "__closesthit__radiance"
+	semantic type                :             CLOSESTHIT
+	trace call(s)                :                      0
+	continuation callable call(s):                      0
+	basic block(s)               :                      3
+	instruction(s)               :                    147
+Info: Properties for entry function "__miss__radiance"
+	semantic type                :                   MISS
+	trace call(s)                :                      0
+	continuation callable call(s):                      0
+	basic block(s)               :                      1
+	instruction(s)               :                      9
+Info: Properties for entry function "__miss__shadow"
+	semantic type                :                   MISS
+	trace call(s)                :                      0
+	continuation callable call(s):                      0
+	basic block(s)               :                      1
+	instruction(s)               :                      2
+Info: Compiled Module Summary
+	non-entry function(s):     0
+	basic block(s)       :     0
+	instruction(s)       :     0
+
+[optix][4][COMPILER] Function properties for __raygen__rg__0x3a804528f30390bb
+	register count                  :   108
+	direct stack size (bytes)       :     8
+	direct spills (bytes)           :     0
+	continuation stack size (bytes) :   256
+	continuation spills (bytes)     :   640
+
+[optix][4][COMPILER] Info: Module Statistics
+	payload values        :          2
+	attribute values      :          0
+Info: Properties for entry function "__raygen__rg"
+	semantic type                :                 RAYGEN
+	trace call(s)                :                      3
+	continuation callable call(s):                      0
+	basic block(s)               :                   1082
+	instruction(s)               :                  13315
+Info: Compiled Module Summary
+	non-entry function(s):     0
+	basic block(s)       :     0
+	instruction(s)       :     0
+
+[optix][4][DISKCACHE] Inserted module in cache with key: ptx-495412-key84cfdd4823178665fdc7af522eda8dbd-sm_89-rtc1-drv591.86
+[optix][4][COMPILER] Info: Pipeline statistics
+	module(s)                            :     1
+	entry function(s)                    :     4
+	trace call(s)                        :     3
+	continuation callable call(s)        :     0
+	direct callable call(s)              :     0
+	basic block(s) in entry functions    :  1087
+	instruction(s) in entry functions    : 13473
+	non-entry function(s)                :     0
+	basic block(s) in non-entry functions:     0
+	instruction(s) in non-entry functions:     0
+	debug information                    :    no
+
