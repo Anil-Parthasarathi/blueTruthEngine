@@ -6,16 +6,24 @@
 //
 //  This header has NO dependency on optix.h and can therefore be included
 //  from both:
-//    • Regular CUDA kernels  (ray_generate.cu, ray_shade.cu)
+//    • Regular CUDA kernels  (ray_generate.cu, ray_shade.cu, ray_present.cu)
 //    • OptiX device programs via optix_launch_params.h  (ray_extend.cu, etc.)
 //
-//  Layout overview (one slot per active path, N = width × height):
+//  Layout overview (one slot per path, N = width × height, one path/pixel):
 //
-//    Generate  →  [ray queue filled]
-//    Extend    →  [hit buffer filled]      ← optixLaunch with __raygen__wf_extend
-//    Shade     →  [next ray queue + shadow queue filled]
-//    Connect   →  [shadow occlusion tests] ← optixLaunch with __raygen__wf_shadow
-//    (loop back to Extend until ray queue is empty)
+//    Generate  →  [rayQueue filled with all N slots]
+//    Extend    →  [hit buffer filled]      ← optixLaunch, __raygen__wf_extend
+//    Shade     →  [rayQueueNext + shadow SoA filled]
+//    Connect   →  [shadow rays traced, radiance updated] ← __raygen__wf_shadow
+//    swap(rayQueue, rayQueueNext); loop back to Extend until the queue is empty
+//    Present   →  [radiance → accumBuffer → PBO]  (once, after the loop)
+//
+//  Why TWO ray queues (ping-pong)?  Shade reads path indices out of the
+//  current queue while appending survivors for the next bounce.  If it
+//  appended into the SAME buffer it reads, a thread could overwrite an entry
+//  another thread has not read yet (block execution order is undefined).
+//  Reading from rayQueue and writing to rayQueueNext removes the race; the
+//  host swaps the two pointers (and their counters) after each bounce.
 // ============================================================================
 
 #include "render_kernel.h"   // Float2/Float3/Float4, TriangleData, BsdfData, ...
@@ -27,7 +35,7 @@
 //
 //  This struct is passed by value to every wavefront kernel.  All fields are
 //  raw device pointers; the host allocates them once in ensureWavefrontBuffers
-//  inside render_kernel.cu and frees them in cudaCleanup.
+//  and frees them in cudaCleanup.
 // ---------------------------------------------------------------------------
 struct WavefrontSoA {
     // ── Current-bounce ray ───────────────────────────────────────────────
@@ -36,8 +44,8 @@ struct WavefrontSoA {
 
     // ── Persistent path state ────────────────────────────────────────────
     Float3*        throughput;     // [maxPaths] spectral path weight
-    Float3*        radiance;       // [maxPaths] accumulated color — added to
-                                   //            accumBuffer on path termination
+    Float3*        radiance;       // [maxPaths] accumulated color — blended into
+                                   //            accumBuffer by the present stage
     float*         eta;            // [maxPaths] running relative IOR (for RR)
     float*         brdfPDF;        // [maxPaths] BRDF PDF of last scatter direction (MIS)
     unsigned char* specularBounce; // [maxPaths] 1 = last bounce was specular/delta
@@ -46,26 +54,34 @@ struct WavefrontSoA {
     uint32_t*      rngState;       // [maxPaths] xorshift32 state — see rt_rng.cuh
 
     // ── Hit buffer (written by extend, consumed by shade) ────────────────
+    //  __closesthit__radiance interpolates the shading normal and texture UV
+    //  from the barycentrics, so the raw barycentrics are not stored.
     int*           hitTriIndex;    // [maxPaths] -1 == miss
-    float*         hitBaryU;       // [maxPaths] optixGetTriangleBarycentrics().x
-    float*         hitBaryV;       // [maxPaths] optixGetTriangleBarycentrics().y
     Float3*        hitPoint;       // [maxPaths] world-space hit position
     Float3*        hitNormal;      // [maxPaths] interpolated shading normal
     Float2*        hitUV;          // [maxPaths] interpolated texture UV
 
-    // ── Ray & shadow queues ──────────────────────────────────────────────
-    //  After each stage the next stage reads from these compacted index lists.
-    //  Use  atomicAdd(wf.rayCount, 1)  to reserve a slot before writing.
-    int*           rayQueue;       // [maxPaths]   path-slot indices → extend
-    int*           shadowQueue;    // [maxShadows] shadow-slot indices → connect
-    int*           rayCount;       // device pointer — reset to 0 at bounce start
-    int*           shadowCount;    // device pointer — reset to 0 at bounce start
+    // ── Ray queues (ping-pong) & counters ────────────────────────────────
+    //  rayQueue/rayCount hold THIS bounce's active path slots (read-only
+    //  during shade).  Shade appends survivors to rayQueueNext with
+    //      int slot = atomicAdd(wf.rayCountNext, 1);
+    //      wf.rayQueueNext[slot] = idx;
+    //  The host swaps the queue and counter pointers after each bounce.
+    int*           rayQueue;       // [maxPaths] path-slot indices → extend
+    int*           rayQueueNext;   // [maxPaths] filled by shade for next bounce
+    int*           rayCount;       // device counter for rayQueue
+    int*           rayCountNext;   // device counter for rayQueueNext — reset to 0
+                                   // before each shade launch
+    int*           shadowCount;    // device counter — reset to 0 before each shade
 
     // ── Shadow ray data (written by shade, read by connect) ─────────────
+    //  No index queue is needed: atomicAdd(wf.shadowCount, 1) hands out
+    //  contiguous slots, so connect indexes these arrays directly with its
+    //  launch index in [0, shadowCount).
     Float3*        shadowOrigin;   // [maxShadows]
     Float3*        shadowDir;      // [maxShadows] (pre-normalised)
     float*         shadowTMax;     // [maxShadows] tMax for the visibility test
-    Float3*        shadowContrib;  // [maxShadows] radiance × MIS weight if unoccluded
+    Float3*        shadowContrib;  // [maxShadows] radiance × MIS × throughput if unoccluded
     uint32_t*      shadowPathIdx;  // [maxShadows] path slot to atomicAdd contrib into
 
     // ── Dimensions ───────────────────────────────────────────────────────
@@ -75,8 +91,8 @@ struct WavefrontSoA {
 
 // ---------------------------------------------------------------------------
 //  WfSceneView — read-only scene data for device kernels that shade.
-//  Built from the static device pointers in render_kernel.cu and passed by
-//  value to wfShade each bounce.  (Fits in constant cache — all reads are
+//  Built from the device pointers in renderer_state and passed by value to
+//  wfShade / wfPresent each launch.  (Fits in constant cache — all reads are
 //  uniform across a warp.)
 // ---------------------------------------------------------------------------
 struct WfSceneView {
@@ -103,7 +119,7 @@ struct WfSceneView {
 
 // ---------------------------------------------------------------------------
 //  WavefrontBuffers — host-side handle that owns all device allocations.
-//  Lives as a static variable inside render_kernel.cu.
+//  Lives in renderer_state.cu.
 // ---------------------------------------------------------------------------
 struct WavefrontBuffers {
     WavefrontSoA soa;              // flat device pointers — copy into LaunchParams.wf

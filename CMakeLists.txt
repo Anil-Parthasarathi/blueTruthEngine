@@ -110,12 +110,17 @@ add_custom_target(embed_optix_ptx DEPENDS "${EMBEDDED_PTX_C}")
 # ── RedTruthEngine executable ────────────────────────────────────────
 add_executable(${PROJECT_NAME}
     src/main.cpp
-    src/render_kernel.cu
+    src/render_kernel.cu           # public API + per-frame dispatch
     src/scene.cpp
-    src/bvh_builder.cpp
     src/optix_ptx_embed.cpp
+    src/host/renderer_state.cu     # shared s_* renderer state (single definition)
+    src/host/optix_setup.cu        # OptiX pipeline / SBTs / GAS build
+    src/host/scene_upload.cu       # cudaInit* scene uploaders
+    src/host/denoiser.cu           # OptiX AI denoiser + linear presentation
+    src/host/wavefront_host.cu     # wavefront buffers + per-frame bounce loop
     src/wavefront/ray_generate.cu  # wfGenerate kernel  (regular CUDA, linked to exe)
     src/wavefront/ray_shade.cu     # wfShade kernel     (regular CUDA, linked to exe)
+    src/wavefront/ray_present.cu   # wfPresent kernel   (regular CUDA, linked to exe)
 )
 
 add_dependencies(${PROJECT_NAME} embed_optix_ptx)

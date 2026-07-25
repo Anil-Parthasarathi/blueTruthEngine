@@ -28,22 +28,6 @@ struct TriangleData {
 // RGB color / radiance type.
 // (We keep using Float3 for convenience throughout the renderer.)
 
-/// Flat BVH node for GPU traversal.
-/// Layout mirrors FastBVH::Node<float> but without the FastBVH dependency on
-/// the device side.  Interior nodes have primCount == 0; leaves have primCount > 0.
-/// Traversal rules:
-///   - left  child = &nodes[i + 1]
-///   - right child = &nodes[i + rightOffset]
-///   - leaf triangles: primIndices[primStart .. primStart+primCount)
-struct LinearBVHNode {
-    float    bmin[3];       // AABB minimum corner
-    uint32_t primStart;     // first index into the BVH prim-index array
-    float    bmax[3];       // AABB maximum corner
-    uint32_t primCount;     // 0 = interior node, >0 = leaf
-    uint32_t rightOffset;   // 0 = leaf; else right child offset from this node
-    uint32_t pad[3];        // pad to 48 bytes (cache-line friendly)
-};
-
 /// Camera parameters for ray generation.
 /// For now the kernel doesn't yet use it, but the ray tracer will.
 struct CameraData {
@@ -99,11 +83,10 @@ struct BsdfData {
 // Host-side API  (implemented in render_kernel.cu)
 // ---------------------------------------------------------------------------
 
-/// Upload a pre-built flat BVH (nodes + reordered prim indices) to the GPU.
-/// Build the data on the CPU first with buildBVH() from bvh_builder.h, then
-/// pass the results here.  Call once after cudaInitScene.
-void cudaInitBVH(const LinearBVHNode* nodes, int nodeCount,
-                 const int* primIndices, int primCount);
+/// Initialise the OptiX pipeline (once) and build the GAS acceleration
+/// structure on-GPU from the triangle data uploaded by cudaInitScene.
+/// Call once after cudaInitScene.
+void cudaInitOptix();
 
 /// Upload a full (flattened) scene to the GPU.
 ///
@@ -130,13 +113,6 @@ void cudaInitTriangleEmission(const Float3* triangleEmission, int triangleCount)
 /// Per-triangle flag: non-zero iff the triangle belongs to a mesh marked emissive in the scene
 /// (Nori-style `Mesh::isEmitter()`), independent of radiance magnitude.
 void cudaInitTriangleEmitterFlags(const uint8_t* flags, int triangleCount);
-
-/// Upload area-light sampling data (for mesh emitters).
-/// - `emissiveTriangleIndices`: indices into the scene triangle array
-/// - `emissiveTriangleCdf`: length = emissiveTriangleCount+1, cdf[0]=0, cdf[N]=totalArea
-void cudaInitEmitters(const int* emissiveTriangleIndices,
-                      const float* emissiveTriangleCdf,
-                      int emissiveTriangleCount);
 
 /// Upload a Nori-like emitter list for random selection.
 ///
