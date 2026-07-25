@@ -15,10 +15,13 @@
 #include <cstdint>
 #include <cstdio>
 
-// Embedded PTX of the optix_programs OBJECT library (generated at build time,
-// see CMake): optix_programs.cu + wavefront/ray_extend.cu + wavefront/ray_connect.cu.
+// Embedded PTX arrays (each OptiX .cu is its own module — see CMake).
 extern "C" const char* getOptixPtx();
 extern "C" size_t      getOptixPtxSize();
+extern "C" const char* getWfExtendPtx();
+extern "C" size_t      getWfExtendPtxSize();
+extern "C" const char* getWfShadowPtx();
+extern "C" size_t      getWfShadowPtxSize();
 
 // ---------------------------------------------------------------------------
 //  OptiX setup helpers
@@ -64,6 +67,16 @@ void ensureOptixPipeline()
                                   getOptixPtx(), getOptixPtxSize(),
                                   log, &logSize, &s_optixModule));
 
+    // Wavefront modules (separate PTX to avoid duplicate-symbol issues).
+    logSize = sizeof(log);
+    OPTIX_CHECK(optixModuleCreate(s_optixContext, &moduleOptions, &pipelineCompileOptions,
+                                  getWfExtendPtx(), getWfExtendPtxSize(),
+                                  log, &logSize, &s_optixModuleWfExtend));
+    logSize = sizeof(log);
+    OPTIX_CHECK(optixModuleCreate(s_optixContext, &moduleOptions, &pipelineCompileOptions,
+                                  getWfShadowPtx(), getWfShadowPtxSize(),
+                                  log, &logSize, &s_optixModuleWfShadow));
+
     // ── Program groups ──────────────────────────────────────────────
     OptixProgramGroupOptions pgOptions = {};
 
@@ -98,14 +111,14 @@ void ensureOptixPipeline()
     // ── Wavefront raygen program groups ─────────────────────────────
     OptixProgramGroupDesc wfExtendDesc = {};
     wfExtendDesc.kind                     = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
-    wfExtendDesc.raygen.module            = s_optixModule;
+    wfExtendDesc.raygen.module            = s_optixModuleWfExtend;
     wfExtendDesc.raygen.entryFunctionName = "__raygen__wf_extend";
     logSize = sizeof(log);
     OPTIX_CHECK(optixProgramGroupCreate(s_optixContext, &wfExtendDesc, 1, &pgOptions, log, &logSize, &s_pgWfExtend));
 
     OptixProgramGroupDesc wfShadowDesc = {};
     wfShadowDesc.kind                     = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
-    wfShadowDesc.raygen.module            = s_optixModule;
+    wfShadowDesc.raygen.module            = s_optixModuleWfShadow;
     wfShadowDesc.raygen.entryFunctionName = "__raygen__wf_shadow";
     logSize = sizeof(log);
     OPTIX_CHECK(optixProgramGroupCreate(s_optixContext, &wfShadowDesc, 1, &pgOptions, log, &logSize, &s_pgWfShadow));
@@ -312,6 +325,8 @@ void freeOptixState()
     if (s_pgMissRadiance) { optixProgramGroupDestroy(s_pgMissRadiance); s_pgMissRadiance = nullptr; }
     if (s_pgMissShadow)   { optixProgramGroupDestroy(s_pgMissShadow);   s_pgMissShadow = nullptr; }
     if (s_pgHitRadiance)  { optixProgramGroupDestroy(s_pgHitRadiance);  s_pgHitRadiance = nullptr; }
+    if (s_optixModuleWfExtend) { optixModuleDestroy(s_optixModuleWfExtend); s_optixModuleWfExtend = nullptr; }
+    if (s_optixModuleWfShadow) { optixModuleDestroy(s_optixModuleWfShadow); s_optixModuleWfShadow = nullptr; }
     if (s_optixModule)    { optixModuleDestroy(s_optixModule);       s_optixModule = nullptr; }
     if (s_optixContext)   { optixDeviceContextDestroy(s_optixContext); s_optixContext = nullptr; }
     s_optixReady = false;

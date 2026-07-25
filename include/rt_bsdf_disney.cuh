@@ -34,8 +34,8 @@ __device__ __forceinline__ Float3 disneySqrt3(const Float3& c)
 }
 
 // Forward declarations of the top-level eval/pdf (lobe sample helpers use them).
-__device__ Float3 bsdfEvalDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec);
-__device__ float  bsdfPdfDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec);
+__device__ __forceinline__ Float3 bsdfEvalDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec);
+__device__ __forceinline__ float  bsdfPdfDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec);
 
 // ############DIFFUSE###########################################################
 
@@ -755,7 +755,7 @@ __device__ __forceinline__ Float3 sampleSheenLobe(const BsdfData& bsdf, BsdfQuer
 // ############DISNEY TOP-LEVEL###################################################
 
 /// Evaluate the BRDF for the given pair of directions
-__device__ Float3 bsdfEvalDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec) {
+__device__ __forceinline__ Float3 bsdfEvalDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec) {
 
     // if the ray is inside of object then only do glass
 
@@ -787,7 +787,7 @@ __device__ Float3 bsdfEvalDisney(const BsdfData& bsdf, const BsdfQueryRecord& bR
 }
 
 /// Evaluate the sampling density of \ref sample() wrt. solid angles
-__device__ float bsdfPdfDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec) {
+__device__ __forceinline__ float bsdfPdfDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec) {
 
     float minMetal = (1.0f - disneyMetallic(bsdf));
     float minSpecTransmission = (1.0f - disneySpecularTransmission(bsdf));
@@ -820,7 +820,7 @@ __device__ float bsdfPdfDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec
 }
 
 /// Sample the BRDF
-__device__ Float3 bsdfSampleDisney(const BsdfData& bsdf, BsdfQueryRecord& bRec, float u1, float u2, float* outPdf = nullptr) {
+__device__ __forceinline__ Float3 bsdfSampleDisney(const BsdfData& bsdf, BsdfQueryRecord& bRec, float u1, float u2, float* outPdf = nullptr) {
 
     // Pick a random lobe to sample out of the 5
 

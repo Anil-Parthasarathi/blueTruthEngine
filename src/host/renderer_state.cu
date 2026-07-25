@@ -53,6 +53,8 @@ int                              s_textureCount = 0;
 // ---------------------------------------------------------------------------
 OptixDeviceContext      s_optixContext   = nullptr;
 OptixModule             s_optixModule    = nullptr;
+OptixModule             s_optixModuleWfExtend = nullptr;
+OptixModule             s_optixModuleWfShadow = nullptr;
 OptixPipeline           s_optixPipeline  = nullptr;
 OptixProgramGroup       s_pgRaygen       = nullptr;
 OptixProgramGroup       s_pgMissRadiance = nullptr;

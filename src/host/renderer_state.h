@@ -82,6 +82,8 @@ extern int                              s_textureCount;
 // ---------------------------------------------------------------------------
 extern OptixDeviceContext      s_optixContext;
 extern OptixModule             s_optixModule;
+extern OptixModule             s_optixModuleWfExtend;
+extern OptixModule             s_optixModuleWfShadow;
 extern OptixPipeline           s_optixPipeline;
 extern OptixProgramGroup       s_pgRaygen;
 extern OptixProgramGroup       s_pgMissRadiance;
