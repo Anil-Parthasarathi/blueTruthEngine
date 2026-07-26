@@ -6,8 +6,6 @@ A CUDA + OpenGL rendering engine. CUDA writes pixels into a Pixel Buffer Object;
 
 <img width="1728" height="1118" alt="completePokemonShowcase" src="https://github.com/user-attachments/assets/2f92fd1b-bf7c-4129-8f7f-e63d92cd9e2b" />
 
-<img width="1440" height="1440" alt="pietaDrama8192-2hr" src="https://github.com/user-attachments/assets/5b6abb27-3aec-40fc-8d7a-fd72c563e693" />
-
 <img width="1280" height="720" alt="anilRenderWhiteFloor" src="https://github.com/user-attachments/assets/c96d0eff-54d5-48fb-8ef2-fbcf77a7a775" />
 
 
