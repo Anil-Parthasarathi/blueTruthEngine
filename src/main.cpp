@@ -25,7 +25,6 @@
 
 // ── Project headers ─────────────────────────────────────────────────
 #include "render_kernel.h"
-#include "bvh_builder.h"
 #include "scene.h"
 
 // ── Standard library ────────────────────────────────────────────────
@@ -40,6 +39,16 @@
 
 static int  g_windowWidth   = 1280;
 static int  g_windowHeight  = 720;
+
+// ---------------------------------------------------------------------------
+//  Render mode selector — edit this to switch between implementations.
+//
+//    true  → wavefront pipeline  (wfGenerate → extend → shade → connect loop)
+//    false → megakernel pipeline (single OptiX __raygen__rg per frame)
+//
+//  This is read once at startup; changing it requires a recompile.
+// ---------------------------------------------------------------------------
+static constexpr bool USE_WAVEFRONT = true;
 
 // Set to true whenever the camera, geometry, or lighting changes so the
 // accumulation buffer is cleared before the next frame.  Wire this up to
@@ -600,7 +609,7 @@ int main(int argc, char** argv)
 {
     // ── Scene description (Nori-style) ─────────────────────────────────
     const std::string scenePath =
-        (argc > 1) ? argv[1] : std::string("assets/scene_anil_linkedin_cover.xml");
+        (argc > 1) ? argv[1] : std::string("assets/scene.xml");
     SceneDescription scene = loadSceneDescription(scenePath);
     g_windowWidth  = scene.windowWidth;
     g_windowHeight = scene.windowHeight;
@@ -767,12 +776,6 @@ int main(int argc, char** argv)
     triangleEmission.reserve(1024);
     triangleEmitterFlags.reserve(1024);
 
-    // Global mesh-emitter sampling (union of all emissive triangles for now)
-    std::vector<int> emissiveTriangleIndices;
-    std::vector<float> emissiveTriangleCdf; // length N+1, cdf[0]=0
-    emissiveTriangleCdf.push_back(0.0f);
-    float emissiveAreaSum = 0.0f;
-
     // Nori-like emitter list (one emitter per emissive mesh)
     std::vector<EmitterData> emitters;
     std::vector<int> emitterTriIndices;   // concatenated per-emitter triangle indices
@@ -827,10 +830,7 @@ int main(int argc, char** argv)
                 triangleEmission.push_back(emitColor);
 
                 const int triIdx = static_cast<int>(triangles.size()) - 1;
-                emissiveTriangleIndices.push_back(triIdx);
                 const float a = triangleAreaHost(t);
-                emissiveAreaSum += a;
-                emissiveTriangleCdf.push_back(emissiveAreaSum);
 
                 // Per-emitter lists
                 emitterTriIndices.push_back(triIdx);
@@ -870,23 +870,14 @@ int main(int argc, char** argv)
                    triangleMaterialIds.data(),
                    g_windowWidth, g_windowHeight);
 
-    // Intersection now runs on the RT cores via an OptiX GAS, which cudaInitBVH
-    // builds on-GPU directly from the triangle data uploaded above. The old
-    // CPU-built LinearBVH is no longer used.
-    cudaInitBVH(nullptr, 0, nullptr, 0);
+    // Intersection runs on the RT cores via an OptiX GAS, which cudaInitOptix
+    // builds on-GPU directly from the triangle data uploaded above.
+    cudaInitOptix();
 
     cudaInitTriangleEmission(triangleEmission.data(),
                              static_cast<int>(triangleEmission.size()));
     cudaInitTriangleEmitterFlags(triangleEmitterFlags.data(),
                                  static_cast<int>(triangleEmitterFlags.size()));
-
-    if (!emissiveTriangleIndices.empty()) {
-        cudaInitEmitters(emissiveTriangleIndices.data(),
-                         emissiveTriangleCdf.data(),
-                         static_cast<int>(emissiveTriangleIndices.size()));
-    } else {
-        cudaInitEmitters(nullptr, nullptr, 0);
-    }
 
     if (!emitters.empty()) {
         cudaInitEmitterTable(emitters.data(), static_cast<int>(emitters.size()),
@@ -935,6 +926,9 @@ int main(int argc, char** argv)
     }
 
     cudaRegisterPBO(g_pbo);
+
+    // Apply the render mode chosen at the top of this file.
+    cudaSetRenderMode(USE_WAVEFRONT ? RenderMode::Wavefront : RenderMode::Megakernel);
 
     std::cout << "[cuda] Ready – entering render loop\n";
 

@@ -71,53 +71,82 @@ target_include_directories(tinyobjloader INTERFACE
     ${CMAKE_SOURCE_DIR}/external/tinyobjloader
 )
 
-# ── OptiX device programs → PTX → embedded byte array ────────────────
-# Compile src/optix_programs.cu to PTX (object library with PTX compilation),
-# then embed the PTX into a C array via bin2c so it can be loaded at runtime
-# without depending on a file path.
-add_library(optix_programs OBJECT src/optix_programs.cu)
-set_target_properties(optix_programs PROPERTIES
-    CUDA_PTX_COMPILATION ON
-    CUDA_ARCHITECTURES 89
-)
-target_include_directories(optix_programs PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${OPTIX_INCLUDE_DIR}
-)
-target_compile_options(optix_programs PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
-)
+# ── OptiX device programs → PTX → embedded byte arrays ───────────────
+# Each OptiX .cu file is compiled to PTX in its own OBJECT library, then
+# embedded into a separate C array via bin2c.  OptiX loads each array as
+# a distinct module — concatenating PTX files is NOT valid (duplicate
+# .version / global declarations).
 
-set(EMBEDDED_PTX_C "${CMAKE_BINARY_DIR}/embedded_optix_ptx.c")
-add_custom_command(
-    OUTPUT  "${EMBEDDED_PTX_C}"
-    COMMAND ${CMAKE_COMMAND}
-            -DBIN2C=${BIN2C}
-            "-DPTX_FILE=$<TARGET_OBJECTS:optix_programs>"
-            -DOUTPUT=${EMBEDDED_PTX_C}
-            -DVAR_NAME=optixProgramsPtx
-            -P "${CMAKE_SOURCE_DIR}/cmake/bin2c_wrapper.cmake"
-    DEPENDS optix_programs "$<TARGET_OBJECTS:optix_programs>"
-    VERBATIM
-    COMMENT "Embedding OptiX PTX into ${EMBEDDED_PTX_C}"
-)
-add_custom_target(embed_optix_ptx DEPENDS "${EMBEDDED_PTX_C}")
+# Helper macro: define an OBJECT library that compiles a single .cu to PTX.
+macro(add_optix_ptx_lib TARGET_NAME SOURCE_FILE)
+    add_library(${TARGET_NAME} OBJECT ${SOURCE_FILE})
+    set_target_properties(${TARGET_NAME} PROPERTIES
+        CUDA_PTX_COMPILATION ON
+        CUDA_ARCHITECTURES 89
+    )
+    target_include_directories(${TARGET_NAME} PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${OPTIX_INCLUDE_DIR}
+    )
+    target_compile_options(${TARGET_NAME} PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+    )
+endmacro()
+
+# 1. Megakernel raygens + CH/miss (optix_programs.cu)
+add_optix_ptx_lib(optix_programs     src/optix_programs.cu)
+# 2. Wavefront extend raygen (ray_extend.cu)
+add_optix_ptx_lib(optix_wf_extend    src/wavefront/ray_extend.cu)
+# 3. Wavefront shadow raygen (ray_connect.cu)
+add_optix_ptx_lib(optix_wf_shadow    src/wavefront/ray_connect.cu)
+
+# Helper macro: embed one PTX file via bin2c.
+macro(add_ptx_embed EMBED_TARGET OBJECT_TARGET VAR_NAME OUTPUT_FILE)
+    add_custom_command(
+        OUTPUT  "${OUTPUT_FILE}"
+        COMMAND ${CMAKE_COMMAND}
+                -DBIN2C=${BIN2C}
+                "-DPTX_FILE=$<TARGET_OBJECTS:${OBJECT_TARGET}>"
+                -DOUTPUT=${OUTPUT_FILE}
+                -DVAR_NAME=${VAR_NAME}
+                -P "${CMAKE_SOURCE_DIR}/cmake/bin2c_wrapper.cmake"
+        DEPENDS ${OBJECT_TARGET} "$<TARGET_OBJECTS:${OBJECT_TARGET}>"
+        VERBATIM
+        COMMENT "Embedding ${OBJECT_TARGET} PTX into ${OUTPUT_FILE}"
+    )
+    add_custom_target(${EMBED_TARGET} DEPENDS "${OUTPUT_FILE}")
+endmacro()
+
+set(EMBEDDED_PTX_C          "${CMAKE_BINARY_DIR}/embedded_optix_ptx.c")
+set(EMBEDDED_WF_EXTEND_C    "${CMAKE_BINARY_DIR}/embedded_wf_extend_ptx.c")
+set(EMBEDDED_WF_SHADOW_C    "${CMAKE_BINARY_DIR}/embedded_wf_shadow_ptx.c")
+
+add_ptx_embed(embed_optix_ptx       optix_programs   optixProgramsPtx     "${EMBEDDED_PTX_C}")
+add_ptx_embed(embed_wf_extend_ptx   optix_wf_extend  optixWfExtendPtx     "${EMBEDDED_WF_EXTEND_C}")
+add_ptx_embed(embed_wf_shadow_ptx   optix_wf_shadow  optixWfShadowPtx     "${EMBEDDED_WF_SHADOW_C}")
 
 # ── RedTruthEngine executable ────────────────────────────────────────
 add_executable(${PROJECT_NAME}
     src/main.cpp
-    src/render_kernel.cu
+    src/render_kernel.cu           # public API + per-frame dispatch
     src/scene.cpp
-    src/bvh_builder.cpp
     src/optix_ptx_embed.cpp
+    src/host/renderer_state.cu     # shared s_* renderer state (single definition)
+    src/host/optix_setup.cu        # OptiX pipeline / SBTs / GAS build
+    src/host/scene_upload.cu       # cudaInit* scene uploaders
+    src/host/denoiser.cu           # OptiX AI denoiser + linear presentation
+    src/host/wavefront_host.cu     # wavefront buffers + per-frame bounce loop
+    src/wavefront/ray_generate.cu  # wfGenerate kernel  (regular CUDA, linked to exe)
+    src/wavefront/ray_shade.cu     # wfShade kernel     (regular CUDA, linked to exe)
+    src/wavefront/ray_present.cu   # wfPresent kernel   (regular CUDA, linked to exe)
 )
 
-add_dependencies(${PROJECT_NAME} embed_optix_ptx)
+add_dependencies(${PROJECT_NAME} embed_optix_ptx embed_wf_extend_ptx embed_wf_shadow_ptx)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${OPTIX_INCLUDE_DIR}
-    ${CMAKE_BINARY_DIR}          # for the generated embedded_optix_ptx.c
+    ${CMAKE_BINARY_DIR}          # for the generated embedded_*_ptx.c files
 )
 
 # Enable separable compilation so future .cu files can call device funcs

@@ -5,17 +5,36 @@ path tracer into a **wavefront** architecture. It is written for *you* to
 implement; it gives the design, the data layout, the kernel breakdown, the host
 loop, and the correctness gotchas — but no finished kernel code.
 
-It is tailored to this codebase. Read it alongside:
+Since the megakernel refactor, all the shading math is already extracted into
+shared headers that the wavefront kernels can call directly — the stubs are
+mostly glue. Read this alongside:
 
-- `src/optix_programs.cu` — current raygen path loop (`__raygen__rg`, `traceRay`,
-  `sampleAreaEmitterNEE`, `sampleSpotlightNEE`, `accumulateEmitterHit`).
-- `src/render_kernel.cu` — host: OptiX context/pipeline/SBT/GAS, `cudaRender`.
+- [WAVEFRONT_IMPLEMENTATION.md](WAVEFRONT_IMPLEMENTATION.md) — the build order, the
+  per-step verification, and a signature reference for every function you'll call.
+  Work from that one; use this document as the per-stage spec it refers back to.
+- [MEGAKERNEL_WALKTHROUGH.md](MEGAKERNEL_WALKTHROUGH.md) — how a frame renders
+  today, step by step, and which shared function each wavefront stage should call.
+  Start here if you need a refresher on the existing path tracer.
+- `src/optix_programs.cu` — the four OptiX entry points (`__raygen__rg`,
+  `__closesthit__radiance`, `__miss__radiance`, `__miss__shadow`).
+- `include/rt_optix_shading.cuh` — `traceClosest`/`traceOccluded`, the megakernel
+  NEE wrappers, and `traceRay` (the per-bounce step).
+- `include/rt_direct_lighting.cuh` — `accumulateEmitterHit` and the **pure** NEE
+  helpers `prepareAreaEmitterNEE` / `prepareSpotlightNEE` (no tracing inside).
+- `include/rt_path_integrator.cuh` — `scatterPath`, `russianRoulette`,
+  `accumulateWelford`, `packPixelGamma`.
+- `include/rt_material.cuh` — `loadBsdfForTriangle` (BSDF + texture override).
+- `include/rt_camera.cuh` — `generatePrimaryRay`.
+- `include/rt_constants.cuh` — `RT_EPSILON`, `MAX_BOUNCES`, `SAMPLES_PER_PIXEL`.
+- `include/wavefront/wavefront_buffers.h` — `WavefrontSoA`, `WfSceneView`.
+- `include/wavefront/wavefront_shading.cuh` — `loadPathState`/`storePathState`,
+  `loadIntersection`, `makeDirectLightingContext`, `enqueueShadowRay`.
+- `src/host/wavefront_host.cu` — the finished host bounce loop
+  (`cudaRenderWavefront`), buffer allocation, `buildSceneView`.
 - `include/optix_launch_params.h` — `LaunchParams`, `RayType`, SBT records.
-- `include/rt_intersect.cuh` — `Ray`, `Intersection`.
-- `include/rt_rng.cuh` — `RngState`.
+- `include/rt_rng.cuh` — `RngState`, `makeRng`, `hashUint`, `rngNextFloat01`.
 - `include/rt_bsdf.cuh` — `bsdfSample`/`bsdfEval`/`bsdfPdf`, `bsdfIsDiffuse`,
   `bsdfIsDelta`, `BsdfType`.
-- `include/rt_emitter_sampling.cuh` — emitter sampling helpers.
 
 ---
 
@@ -40,35 +59,36 @@ a small kernel that does one job over a large batch of *active* paths held in
 divergence) and small (low register pressure -> high occupancy). It also lets
 you **sort paths by material** so each shade launch runs one BSDF coherently.
 
-With Part 1 (OptiX) already done, the "intersect" stage becomes a thin OptiX
-launch that only traces and writes hits — this is NVIDIA's standard
-"wavefront + OptiX-for-traversal" design.
+The "intersect" stage stays a thin OptiX launch that only traces and writes
+hits — this is NVIDIA's standard "wavefront + OptiX-for-traversal" design.
 
 ```
-generate -> [ray queue] -> intersect(OptiX) -> [hit buffer] -> logic
-   ^                                                              |
-   |                                                              v
-[ray queue] <----- shade(per material) <--- [material queues] <--+
-                        |                                          |
-                        v                                          v
-                  [shadow queue] -> occlusion(OptiX) -> accumulate radiance
+generate ─▶ [rayQueue] ─▶ extend(OptiX) ─▶ [hit buffer] ─▶ shade
+   ▲                                                        │  │
+   │            (host swaps the queues)                     │  ▼
+[rayQueue] ◀── [rayQueueNext] ◀─────────────────────────────┘ [shadow SoA]
+                                                                 │
+                                                                 ▼
+                                             connect(OptiX) ─▶ radiance (atomicAdd)
+after the loop:  present ─▶ accumBuffer (Welford) ─▶ PBO (gamma)
 ```
 
 ---
 
-## 1. Decide the scope of the first version
+## 1. Scope of the first version
 
 Keep the first wavefront version **as close to current behavior as possible** so
 you can diff images:
 
-- Keep `SAMPLES_PER_PIXEL` semantics by treating each `cudaRender` frame as **one
-  path per pixel** and accumulating across frames (the `s_accumBuffer_d` Welford
-  blend already does this). The simplest start is **N = width*height paths in
-  flight, one bounce-step per stage pass**.
-- Keep the same RNG seeding (`makeRng(hashUint(pixelIndex ^ (frameIndex * 0x9e3779b9u)))`).
-- Keep MIS exactly as in `traceRay`: `brdfPDF`, `specularBounce`, the
-  `convertAreaPDFtoSolidAnglePDF` weighting, and the `bsdfIsDiffuse` vs delta
-  routing.
+- One `cudaRender` frame traces **one path per pixel** and accumulates across
+  frames (the `s_accumBuffer_d` Welford blend already does this). The megakernel
+  traces `SAMPLES_PER_PIXEL = 5` paths per pixel per frame, so **at equal frame
+  counts the wavefront image is ~5x noisier even when perfectly correct**. It
+  converges to the same result; compare at 5x the frame count (or divide by eye).
+- Keep the same RNG seeding: `makeRng(hashUint(pixelIndex ^ (frameIndex * 0x9e3779b9u)))`.
+- Keep MIS exactly as in the megakernel — you get this for free by calling the
+  shared `accumulateEmitterHit` / `prepare*NEE` / `scatterPath` instead of
+  re-implementing them.
 
 Only after it matches should you add multiple paths-in-flight per pixel and
 material sorting.
@@ -77,151 +97,171 @@ material sorting.
 
 ## 2. SoA path-state buffers
 
-Replace the per-thread `PathState` (in `src/optix_programs.cu`) and the local
-`Intersection`/`RngState` with parallel device arrays of length
-`N = width * height` (one slot per pixel for v1). Allocate once in
-`cudaInitScene`/`cudaResetAccumulation`; free in `cudaCleanup`.
+`include/wavefront/wavefront_buffers.h` already defines the layout, and
+`src/host/wavefront_host.cu` allocates/frees it. Summary:
 
-Fields to store (split into separate arrays — do **not** keep them interleaved):
-
-Path state (persists across bounces):
-- `float3 rayOrigin[N]`, `float3 rayDir[N]`
-- `float3 throughput[N]`
-- `float3 radiance[N]` (the per-path accumulated color, == `PathState::accumulatedColor`)
+Path state (persists across bounces; mirrors the megakernel's `PathState`):
+- `Float3 rayOrigin[N]`, `Float3 rayDir[N]`
+- `Float3 throughput[N]`
+- `Float3 radiance[N]` (== `PathState::accumulatedColor`)
 - `int    bounceCount[N]`
 - `float  eta[N]`
 - `float  brdfPDF[N]`          <- MIS state, MUST persist
-- `unsigned char specularBounce[N]` (bool)   <- MIS state, MUST persist
-- `unsigned int pixelIndex[N]`
-- `RngState rng[N]`            <- MUST persist; advancing it in any stage updates the same slot
+- `unsigned char specularBounce[N]`          <- MIS state, MUST persist
+- `uint32_t pixelIndex[N]`
+- `uint32_t rngState[N]`       <- MUST persist; every stage that draws numbers
+  writes the advanced state back to the same slot
 
-Intersection results (written by the intersect stage, read by logic/shade):
+Hit buffer (written by extend, read by shade):
 - `int    hitTriIndex[N]`  (-1 == miss)
-- `float  hitT[N]`
-- `float2 hitBary[N]` (or precompute `float3 hitPoint`, `float3 hitNormal`,
-  `float2 hitUV` if you prefer to do attribute interpolation in the intersect
-  closest-hit, mirroring `__closesthit__radiance`).
+- `Float3 hitPoint[N]`, `Float3 hitNormal[N]`, `Float2 hitUV[N]`
+
+> There are **no barycentric fields**: `Intersection` (in `rt_intersect.cuh`)
+> doesn't store them either — `__closesthit__radiance` consumes the barycentrics
+> to interpolate `hitNormal` and `uv`, then discards them. The interpolated
+> values are everything shade needs.
 
 Queues / counters (device `int` via `atomicAdd`):
-- `int rayQueue[N]`     + `int* rayCount`        (paths needing an extend/closest-hit)
-- `int shadowQueue[M]`  + `int* shadowCount`     (M sized for worst case; see §6)
-- optionally per-material queues (see §8).
-
-Tip: a single big `cudaMalloc` carved into views keeps allocation simple. Keep a
-small `struct WavefrontBuffers` of raw pointers and pass it in `LaunchParams`
-(extend the struct in `include/optix_launch_params.h`) and/or to CUDA kernels.
+- `int rayQueue[N]` + `int* rayCount` — THIS bounce's active paths (read-only
+  during shade).
+- `int rayQueueNext[N]` + `int* rayCountNext` — filled by shade for the NEXT
+  bounce; the host swaps the two pairs after each bounce (**ping-pong**).
+  A single queue would race: shade appends into the same buffer other threads
+  are still reading from, so one thread can clobber an entry before it is read.
+- `int* shadowCount` + the shadow SoA (`shadowOrigin/Dir/TMax/Contrib/PathIdx`,
+  each `[M]`, `M = N * (1 + spotlightCount + 1)` worst case).
+  There is **no shadow index queue**: `atomicAdd(shadowCount, 1)` already hands
+  out contiguous slots, so connect indexes the shadow arrays directly with its
+  launch index.
 
 ---
 
-## 3. Generate stage (CUDA kernel)
+## 3. Stage 1 — Generate (`src/wavefront/ray_generate.cu`, CUDA kernel)
 
 One thread per pixel:
 
-1. Compute `pixelIndex`, seed `rng[pixelIndex]` exactly as `__raygen__rg` does.
-2. Generate the primary ray (port `generatePrimaryRay`, including the sub-pixel
-   jitter draw from the RNG). Write `rayOrigin`, `rayDir`.
+1. Seed the RNG exactly as `__raygen__rg` does:
+   `RngState rng = makeRng(hashUint(idx ^ (frameIndex * 0x9e3779b9u)));`
+2. Draw the sub-pixel jitter (`rngNextFloat01(rng) - 0.5f` twice) and call the
+   shared `generatePrimaryRay(px, py, width, height, camera, jx, jy)` from
+   `rt_camera.cuh`. Write `rayOrigin`, `rayDir`.
 3. Initialize `throughput = (1,1,1)`, `radiance = 0`, `bounceCount = 0`,
-   `eta = 1`, `brdfPDF = 0`, `specularBounce = 1`.
-4. Append the slot index to `rayQueue` via `atomicAdd(rayCount, 1)` (for v1 with
-   one path per pixel, the queue is just `0..N-1`, so you can skip the atomic and
-   launch the intersect over all N initially).
+   `eta = 1`, `brdfPDF = 0`, `specularBounce = 1`, `pixelIndex = idx`, and
+   persist `rng.state`.
+4. Append the slot index to the **current** queue:
+   `wf.rayQueue[atomicAdd(wf.rayCount, 1)] = idx;`
 
-Reset `rayCount`/`shadowCount` to 0 with `cudaMemset` before the stages that
-fill them.
-
----
-
-## 4. Intersect / Extend stage (OptiX)
-
-Reuse the GAS and pipeline from Part 1, but make a **second, minimal raygen**
-that does *only* traversal:
-
-1. Add a launch-params pointer to the ray SoA + the active `rayQueue` + count.
-2. The new `__raygen__extend` maps `optixGetLaunchIndex().x` -> queue slot ->
-   path index, reads `rayOrigin/rayDir`, calls `optixTrace` (radiance ray type),
-   and the closest-hit writes `hitTriIndex/hitT/hitBary` (or the full
-   interpolated hit) into the SoA at that path index. The miss program writes
-   `hitTriIndex = -1`.
-3. Launch with `optixLaunch(width = activeCount, height = 1)` — i.e. a 1-D launch
-   over the compacted active set. Keep the **row-band tiling** wrapper from
-   `cudaRender` (or cap `activeCount` per launch) so you never trip the Windows
-   TDR watchdog.
-
-You can keep your current `__raygen__rg` for the non-wavefront path, and add the
-extend raygen + program group + SBT records beside it. The closest-hit logic is
-the same attribute interpolation already in `__closesthit__radiance`.
+The host resets `wf.rayCount` to 0 before this launch (already wired in
+`cudaRenderWavefront`).
 
 ---
 
-## 5. Logic stage (CUDA kernel)
+## 4. Stage 2 — Extend (`src/wavefront/ray_extend.cu`, OptiX raygen)
 
-One thread per active path (read from the queue you intersected). This is the
-"router" — port the top of `traceRay` plus the loop control from
-`__raygen__rg`:
+`__raygen__wf_extend` does *only* traversal:
 
-1. If `hitTriIndex < 0` (miss): the path is done. The current code just breaks;
-   environment light would be added here. Leave `radiance` as-is, do **not**
-   re-enqueue.
-2. If hit an emitter (`params.triangleEmitterFlags[tri] != 0`): run
-   `accumulateEmitterHit` (the MIS BRDF-side weight). This reads `brdfPDF` and
-   `specularBounce` from the path state — that's why they must persist.
-3. Russian roulette: port the `bounceCount > 3` block from `__raygen__rg`
-   (note it divides `throughput` by the continuation probability). If the path
-   dies, finalize it (write its `radiance` into the per-pixel accumulation — see
-   §9) and don't re-enqueue.
-4. Survivors: append the path index to the **shade queue** (or per-material queue,
-   §8). Do not advance the ray here; that happens in shade.
+1. `queueSlot = optixGetLaunchIndex().x`, `idx = params.wf.rayQueue[queueSlot]`.
+2. Build a `Ray` from `rayOrigin[idx]` / `rayDir[idx]` and call the shared
+   `traceClosest(params.handle, ray, its)` from `rt_optix_shading.cuh` — the
+   same helper the megakernel's `traceRay` uses (payload packing, `RT_EPSILON`
+   tmin, `RAY_TYPE_RADIANCE`).
+3. Write `its.triangleIndex`, `its.hitPoint`, `its.hitNormal`, `its.uv` into the
+   hit buffer at `idx`. Miss ⇒ `hitTriIndex[idx] = -1`.
 
-Keep an explicit `bounceCount < MAX_BOUNCES` guard to bound the loop.
-
-> Implementation choice: you can merge "logic" into the front of the shade kernel
-> to save a launch, but keeping it separate makes material sorting (§8) cleaner.
+The existing `__closesthit__radiance` / `__miss__radiance` programs handle the
+payload; no new hit/miss programs are needed. The host launches with
+`optixLaunch(width = activeCount, height = 1)`.
 
 ---
 
-## 6. Shade stage (CUDA kernel)
+## 5. Stage 3 — Shade (`src/wavefront/ray_shade.cu`, CUDA kernel)
 
-One thread per surviving path. Port the **bottom half of `traceRay`**:
+One thread per entry in the current queue. This is glue around the shared
+functions — the same sequence as the megakernel's `traceRay`, with two changes:
+shadow rays are **enqueued** instead of traced, and terminated paths are simply
+**not re-enqueued** (no accumulation here — see §7).
 
-1. Load `BsdfData` (`params.bsdfs[triangleBsdfIds[tri]]`), apply the texture
-   override exactly as `traceRay` does (the `tex2D<float4>` block).
-2. If `bsdfIsDiffuse(bsdf)`: set `specularBounce = 0` and do NEE:
-   - **Area emitters:** port `sampleAreaEmitterNEE`, but instead of calling
-     `traceOccluded` inline, **write a shadow ray** (origin = hit point,
-     direction = `directionToLight`, `tMax = distToLight - RT_EPSILON`) plus the
-     precomputed light contribution (`fr * Le * lightWeight * geo / pdf *
-     throughput`) into the **shadow queue** with `atomicAdd(shadowCount, 1)`.
-     The contribution is only added to `radiance` *after* the occlusion stage
-     confirms the ray is unblocked (§7).
-   - **Spotlights:** port `sampleSpotlightNEE` the same way — one shadow ray per
-     spotlight per path. Size the shadow queue for
-     `activePaths * (1 + spotlightCount)` worst case.
-   - else set `specularBounce = 1` (delta/specular: no NEE).
-3. Sample the BSDF for the next bounce (port the `bsdfSample` block): update
-   `rayOrigin = hitPoint + bounceDir * RT_EPSILON`, `rayDir = bounceDir`,
-   `throughput *= sampleWeight`, `eta *= bsdfQuery.eta`, set `brdfPDF`,
-   `bounceCount++`.
-4. Append the path back into the **ray queue** for the next intersect pass.
+```
+idx = wf.rayQueue[queueSlot]
+PathState ps = loadPathState(wf, idx);          // wavefront_shading.cuh
+RngState  rng; rng.state = wf.rngState[idx];
 
-This is exactly the work `traceRay` does — only the shadow test and the loop are
-externalized.
+a) Miss (hitTriIndex < 0): optionally add background × ps.throughput; store
+   back; return (no re-enqueue).
+
+b) Hit:
+   its  = loadIntersection(wf, idx);
+   ctx  = makeDirectLightingContext(scene);
+   bsdf = loadBsdfForTriangle(ctx, scene.bsdfs, scene.triangleBsdfIds,
+                              its.triangleIndex, its.uv);
+
+   1. if (ctx.triangleEmitterFlags[its.triangleIndex]) accumulateEmitterHit(ps, its, ctx);
+   2. if (bsdfIsDiffuse(bsdf)) {
+          ps.specularBounce = false;
+          ShadowRayRecord sr{};
+          if (prepareAreaEmitterNEE(ps, rng, its, bsdf, ctx, sr))
+              enqueueShadowRay(wf, sr, idx);
+          for (si in 0..ctx.spotlightCount)
+              if (prepareSpotlightNEE(ps, its, bsdf, ctx, si, sr))
+                  enqueueShadowRay(wf, sr, idx);
+      } else ps.specularBounce = true;
+   3. scatterPath(ps, rng, its, bsdf);           // BSDF sample + ray advance
+   4. if (!russianRoulette(ps, rng)) { store back; return; }
+   5. ++ps.bounceCount; storePathState(wf, idx, ps); wf.rngState[idx] = rng.state;
+      wf.rayQueueNext[atomicAdd(wf.rayCountNext, 1)] = idx;   // NEXT queue!
+```
+
+**Ordering hazard:** `accumulateEmitterHit` reads the *previous* bounce's
+`specularBounce`, `brdfPDF`, and ray origin/direction, and `prepare*NEE` reads
+the previous ray direction — all of which `scatterPath` overwrites. Work on the
+local `PathState` loaded once at the top and only call `scatterPath` after the
+emitter-hit and NEE steps, exactly like the megakernel.
+
+**The `bsdfSample` API** (used inside the shared `scatterPath` — you don't call
+it yourself, but for reference): the throughput weight is the **return value**
+of `Float3 bsdfSample(const BsdfData&, BsdfQueryRecord&, float u1, float u2,
+float* outPdf = nullptr)`. There is no `bsdfQ.value`, `.pdf`, or `.sampledType`;
+the PDF comes from `bsdfPdf(bsdf, bsdfQ)` and specular-ness from
+`bsdfIsDiffuse(bsdf)` / `bsdfIsDelta(bsdf)` on the material type.
 
 ---
 
-## 7. Occlusion stage (OptiX)
+## 6. Stage 4 — Connect (`src/wavefront/ray_connect.cu`, OptiX raygen)
 
-A second minimal OptiX raygen (`__raygen__shadow`) over the shadow queue:
+`__raygen__wf_shadow` over `[0, shadowCount)`; the launch index **is** the
+shadow slot (no index queue):
 
-1. Read a shadow ray (origin/dir/tMax) and its stored contribution + target path
-   index from the shadow SoA.
-2. `optixTrace` with the shadow ray type and
-   `OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | DISABLE_CLOSESTHIT | DISABLE_ANYHIT`
-   (same as `traceOccluded` today). The shadow miss program means "not occluded".
-3. If **not** occluded, `atomicAdd` the stored contribution into `radiance[pathIndex]`
-   (atomic because multiple shadow rays — area + several spotlights — target the
-   same path). If occluded, drop it.
+1. Read `shadowOrigin/Dir/TMax/Contrib/PathIdx` at the launch index.
+2. Test occlusion with the shared `traceOccluded(params.handle, org, dir, tMax)`
+   from `rt_optix_shading.cuh` (terminate-on-first-hit, `RAY_TYPE_SHADOW`;
+   `__miss__shadow` clears the payload — identical to the megakernel wrappers).
+3. If **not** occluded, `atomicAdd` the stored contribution into
+   `radiance[pathIdx]` (atomic because area NEE + several spotlights can target
+   the same path). If occluded, drop it.
 
-Reuse the existing `RAY_TYPE_SHADOW` SBT entry and miss program from Part 1.
+`shadowContrib` is already MIS-weighted and throughput-multiplied by the
+`prepare*NEE` helpers — connect does no shading math.
+
+---
+
+## 7. Stage 5 — Present (`src/wavefront/ray_present.cu`, CUDA kernel)
+
+Runs **once per frame, after the bounce loop** — this is where accumulation
+happens, NOT in shade. Why: connect runs *after* shade each bounce, so a path
+that writes NEE shadow rays and then dies (miss/RR) in the same shade call would
+snapshot its radiance into `accumBuffer` *before* those shadow contributions
+land — silently dropping direct lighting on terminating paths. Once the loop
+exits, `wf.radiance[idx]` is final (one path per pixel per frame), so a single
+terminal pass is both correct and simpler.
+
+One thread per path slot:
+
+1. `blended = accumulateWelford(scene.accumBuffer, wf.pixelIndex[idx],
+   wf.radiance[idx], scene.frameIndex)` — shared with `__raygen__rg`.
+2. `framebuffer[pixelIndex] = packPixelGamma(blended)` — writes the PBO.
+
+If the denoiser is on, the host then calls `denoiseAndPresent`, overwriting the
+PBO with the denoised tonemap (mirrors the megakernel path).
 
 ---
 
@@ -230,7 +270,7 @@ Reuse the existing `RAY_TYPE_SHADOW` SBT entry and miss program from Part 1.
 This is the biggest divergence win for your scene (it has diffuse, dielectric,
 mirror, microfacet, and Disney materials).
 
-- After the logic stage, instead of one shade queue, bucket survivors into **per
+- After extend, instead of one shade launch, bucket paths into **per
   `BsdfType` queues** (5 queues; see `enum BsdfType` in `include/render_kernel.h`).
   Either:
   - append to `queue[bsdfType]` with a per-bucket `atomicAdd`, or
@@ -246,88 +286,72 @@ that material's functions (drop the dispatch in `include/rt_bsdf.cuh`).
 
 ---
 
-## 9. Accumulation & present (unchanged math)
+## 9. Host loop (`src/host/wavefront_host.cu` — already implemented)
 
-When a path terminates (miss, RR death, or `bounceCount == MAX_BOUNCES`), its
-`radiance` is the sample value for its pixel. Fold it into `s_accumBuffer_d`
-using the **same Welford blend** as `__raygen__rg`:
+`cudaRenderWavefront` is fully wired; you only implement the kernels:
 
 ```
-new_avg = prev + (sample - prev) / (frameIndex + 1)
-```
-
-Then tonemap to the PBO. You already have a `presentLinearKernel` in
-`src/render_kernel.cu` that applies the exact gamma-2.2 encode — reuse it
-(and it also feeds the OptiX denoiser path). With one path/pixel/frame, each
-pixel terminates exactly once per frame, so the blend stays correct.
-
----
-
-## 10. Host loop (in `cudaRender`)
-
-Replace the single tiled `optixLaunch` with a bounce loop:
-
-```
-reset accumulation-frame state; rayCount = N (all pixels)
-generate()                                  // CUDA
-for (bounce = 0; bounce < MAX_BOUNCES; ++bounce) {
-    if (rayCount == 0) break;
-    shadowCount = 0
-    intersect(rayCount)                     // OptiX extend raygen (tiled)
-    logic(rayCount)                          // CUDA: emitter hit, RR, route, finalize dead
-    rayCount = 0                             // will be refilled by shade
-    [sort by material]                       // optional
-    shade(activePaths)                       // CUDA: NEE -> shadow queue, sample -> ray queue
-    occlusion(shadowCount)                   // OptiX shadow raygen (tiled)
+ensureWavefrontBuffers(w, h)
+rayCount = 0
+generate()                                  // CUDA — fills rayQueue with all N
+for (bounce = 0; bounce < MAX_BOUNCES; ++bounce) {   // shared constant (200)
+    activeCount = *rayCount;  if (0) break;
+    extend(activeCount)                     // OptiX, s_sbt_wf_extend
+    rayCountNext = 0; shadowCount = 0       // NEXT queue reset — current stays
+    shade(activeCount)                      // CUDA — fills rayQueueNext + shadow SoA
+    if (shadowCount > 0) connect(shadowCount)  // OptiX, s_sbt_wf_shadow
+    swap(rayQueue, rayQueueNext); swap(rayCount, rayCountNext)   // ping-pong
 }
-present()                                    // Welford blend already done as paths die; tonemap
-++frameIndex
+present()                                   // CUDA — Welford + gamma → PBO
+if (denoiserEnabled) denoiseAndPresent()
 ```
 
-Read `rayCount`/`shadowCount` back with a small `cudaMemcpy` (or keep them in
-device memory and launch with a generous fixed grid that early-outs on
-`tid >= count`). The early-out approach avoids a sync per bounce.
-
-Keep the **TDR-safe tiling**: cap any single OptiX/CUDA launch so it stays well
-under ~1–2 s. Splitting by active count usually does this automatically as paths
-die off.
+Counter readbacks are small `cudaMemcpy`s with a `cudaDeviceSynchronize()`
+between stages. As paths die off, `activeCount` shrinks, so per-launch cost
+drops automatically (which also keeps launches well under the Windows TDR
+watchdog).
 
 ---
 
-## 11. Correctness checklist
+## 10. Correctness checklist
 
-- RNG (`rng[N]`) is read-modify-written in generate **and** shade (and NEE). Make
+- RNG (`rngState[N]`) is read-modify-written in generate **and** shade. Make
   sure every consumer writes the advanced state back to the same slot, or you'll
   get correlated/repeated samples.
-- `brdfPDF` and `specularBounce` are produced in shade and consumed in the *next*
-  bounce's logic (`accumulateEmitterHit`). Persist them.
-- Preserve `RT_EPSILON` handling: bounce origin offset (`+ bounceDir*RT_EPSILON`),
-  shadow `tMax = dist - RT_EPSILON`, closest `tmin = RT_EPSILON`.
-- Keep `bsdfIsDiffuse` vs delta routing identical (only non-delta BSDFs do NEE).
+- `brdfPDF` and `specularBounce` are produced by `scatterPath` in shade and
+  consumed by `accumulateEmitterHit` in the *next* bounce's shade. Persist them,
+  and call `accumulateEmitterHit` BEFORE `scatterPath` within a bounce.
+- Shade appends survivors to `rayQueueNext`/`rayCountNext`, never to the queue
+  it is reading. The host swap makes them current for the next bounce.
+- Preserve `RT_EPSILON` handling — free if you use the shared helpers: bounce
+  origin offset (`+ bounceDir*RT_EPSILON` in `scatterPath`), shadow
+  `tMax = dist - RT_EPSILON` (in `prepare*NEE`), closest `tmin = RT_EPSILON`
+  (in `traceClosest`).
+- Keep `bsdfIsDiffuse` vs delta routing identical (only diffuse BSDFs do NEE).
 - Shadow contributions must be added **atomically** (multiple lights per path).
-- Verify against the current renderer: same scene, same `frameIndex` count,
-  compare the accumulated image (it should converge to the same result; per-frame
-  noise pattern will differ because work ordering changed, which is fine).
+- Accumulate ONLY in present. Shade never touches `accumBuffer`.
+- Verify against the megakernel: same scene, and remember the 5x
+  samples-per-frame difference (§1) when comparing at equal frame counts.
 
 ---
 
-## 12. Suggested implementation order
+## 11. Suggested implementation order
 
-1. SoA buffers + generate + a CUDA "shade-all-in-one" that still loops internally
-   (just to validate the buffers) — optional scaffolding.
-2. Split intersect into the OptiX extend raygen; verify hits match.
-3. Split logic + shade; run the host bounce loop with **inline** occlusion first
-   (call `traceOccluded` from shade via a CUDA-side trace is not possible — so do
-   occlusion as its own OptiX stage from the start).
-4. Add the shadow queue + occlusion stage.
-5. Match the image to the megakernel.
-6. Add per-material sorting (§8) and multiple paths-in-flight; profile with
-   Nsight Compute (look at occupancy, warp execution efficiency, and the
-   per-stage time split).
+1. `wfGenerate` + a debug visualisation (e.g. write `rayDir` as color via a
+   temporary present pass) to validate the buffers.
+2. `__raygen__wf_extend`; visualise `hitNormal` to verify hits match.
+3. `wfPresent` (tiny — two shared calls) so terminated paths reach the screen.
+4. `wfShade` miss path only → scene silhouette against black.
+5. `wfShade` full (emitter hit + scatter + RR + re-enqueue), shadow queue still
+   empty → indirect-only image.
+6. `__raygen__wf_shadow` + NEE enqueues in shade → direct lighting appears;
+   match the image to the megakernel.
+7. Add per-material sorting (§8) and multiple paths-in-flight; profile with
+   Nsight Compute (occupancy, warp execution efficiency, per-stage time split).
 
 ---
 
-## 13. Expected payoff (this codebase)
+## 12. Expected payoff (this codebase)
 
 - Wavefront vs the current megakernel-on-OptiX: typically **1.3–2x**, weighted
   toward the high end here because of `MAX_BOUNCES = 200` + mixed/Disney BSDFs

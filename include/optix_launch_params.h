@@ -5,17 +5,19 @@
 // ---------------------------------------------------------------------------
 //  Shared launch-parameter block for the OptiX raygen pipeline.
 //
-//  This struct replaces the long argument list previously passed to
-//  renderKernel<<<>>>.  The host fills a device copy of this struct every
-//  frame and passes its device pointer to optixLaunch().  The device module
-//  declares  `extern "C" __constant__ LaunchParams params;`  and OptiX
-//  populates it before launching __raygen__rg.
+//  The host fills a device copy of this struct every frame and passes its
+//  device pointer to optixLaunch().  The device module declares
+//  `extern "C" __constant__ LaunchParams params;`  and OptiX populates it
+//  before launching the selected raygen (__raygen__rg, __raygen__wf_extend,
+//  or __raygen__wf_shadow).
 //
-//  Both host (render_kernel.cu) and device (optix_programs.cu) include this
+//  Both host (render_kernel.cu, src/host/*.cu) and device (optix_programs.cu,
+//  src/wavefront/ray_extend.cu, src/wavefront/ray_connect.cu) include this
 //  header, so the layout MUST stay identical on both sides.
 // ---------------------------------------------------------------------------
 
-#include "render_kernel.h"   // Float3, TriangleData, BsdfData, EmitterData, ...
+#include "render_kernel.h"             // Float3, TriangleData, BsdfData, EmitterData, ...
+#include "wavefront/wavefront_buffers.h" // WavefrontSoA — no optix.h dependency
 
 #include <optix.h>           // OptixTraversableHandle
 #include <cuda_runtime.h>    // cudaTextureObject_t
@@ -71,6 +73,11 @@ struct LaunchParams {
     // ── Textures (one CUDA texture object handle per material) ───────
     const cudaTextureObject_t* texObjects;
     int                        textureCount;
+
+    // ── Wavefront mode SoA ──────────────────────────────────────────
+    // All pointers are null/zero in megakernel mode.
+    // Populated each frame by cudaRenderWavefront() before optixLaunch.
+    WavefrontSoA wf;
 };
 
 // SBT record headers.  We carry no per-record payload data (everything lives
