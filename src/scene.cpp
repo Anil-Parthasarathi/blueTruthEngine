@@ -371,6 +371,37 @@ SceneDescription loadSceneDescription(const std::string& path)
         }
     }
 
+    // --- Environment map (HDRI IBL) ------------------------------------------
+    {
+        size_t searchFrom = 0;
+        std::string tagContent;
+        if (extractNextTag(xml, "environment", searchFrom, tagContent)) {
+            desc.envMapPath = extractAttributeFromTag(tagContent, "map");
+            if (desc.envMapPath.empty()) {
+                std::cerr << "[scene] <environment> tag found but missing required `map` attribute.\n";
+                std::exit(EXIT_FAILURE);
+            }
+
+            std::string intensityStr = extractAttributeFromTag(tagContent, "intensity");
+            if (!intensityStr.empty()) {
+                try { desc.envMapIntensity = std::stof(intensityStr); } catch (...) {
+                    std::cerr << "[scene] <environment> invalid float attribute `intensity`: \""
+                              << intensityStr << "\"\n";
+                    std::exit(EXIT_FAILURE);
+                }
+            }
+
+            std::string rotationStr = extractAttributeFromTag(tagContent, "rotation");
+            if (!rotationStr.empty()) {
+                try { desc.envMapRotation = std::stof(rotationStr); } catch (...) {
+                    std::cerr << "[scene] <environment> invalid float attribute `rotation`: \""
+                              << rotationStr << "\"\n";
+                    std::exit(EXIT_FAILURE);
+                }
+            }
+        }
+    }
+
     // --- Window / film ------------------------------------------------------
     {
         auto w = extractAttribute(xml, "window", "width");

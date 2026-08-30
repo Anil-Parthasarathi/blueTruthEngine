@@ -113,6 +113,8 @@ struct WfSceneView {
     int                        spotlightCount;
     const cudaTextureObject_t* texObjects;
     int                        textureCount;
+    EnvMapData                 envMap;
+    bool                       hasEnvMap;
     Float3*                    accumBuffer;  // progressive accumulation target
     int                        frameIndex;  // Welford sample count
 };

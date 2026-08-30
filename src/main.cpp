@@ -925,6 +925,32 @@ int main(int argc, char** argv)
         }
     }
 
+    // ── Environment map (HDRI IBL) ──────────────────────────────────
+    if (!scene.envMapPath.empty()) {
+        int envW = 0, envH = 0, envComp = 0;
+        float* envPixelsRGB = stbi_loadf(scene.envMapPath.c_str(), &envW, &envH, &envComp, 3);
+        if (!envPixelsRGB) {
+            std::cerr << "[envmap] Failed to load \"" << scene.envMapPath << "\"\n";
+            std::exit(EXIT_FAILURE);
+        }
+
+        // stbi_loadf with comp=3 gives RGB; CUDA textures need RGBA float4.
+        // Pad with alpha = 1.0f.
+        std::vector<float> envPixelsRGBA(static_cast<size_t>(envW) * static_cast<size_t>(envH) * 4);
+        for (int i = 0; i < envW * envH; ++i) {
+            envPixelsRGBA[static_cast<size_t>(i) * 4 + 0] = envPixelsRGB[i * 3 + 0];
+            envPixelsRGBA[static_cast<size_t>(i) * 4 + 1] = envPixelsRGB[i * 3 + 1];
+            envPixelsRGBA[static_cast<size_t>(i) * 4 + 2] = envPixelsRGB[i * 3 + 2];
+            envPixelsRGBA[static_cast<size_t>(i) * 4 + 3] = 1.0f;
+        }
+        stbi_image_free(envPixelsRGB);
+
+        cudaInitEnvMap(envPixelsRGBA.data(), envW, envH,
+                       scene.envMapIntensity, scene.envMapRotation);
+    } else {
+        cudaInitEnvMap(nullptr, 0, 0, 0.0f, 0.0f);
+    }
+
     cudaRegisterPBO(g_pbo);
 
     // Apply the render mode chosen at the top of this file.

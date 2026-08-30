@@ -98,6 +98,8 @@ __device__ __forceinline__ DirectLightingContext makeDirectLightingContext(const
     ctx.texObjects           = scene.texObjects;
     ctx.triangleMaterialIds  = scene.triangleMaterialIds;
     ctx.textureCount         = scene.textureCount;
+    ctx.envMap               = scene.envMap;
+    ctx.hasEnvMap            = scene.hasEnvMap;
     return ctx;
 }
 

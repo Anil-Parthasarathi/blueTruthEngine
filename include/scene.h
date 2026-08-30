@@ -124,6 +124,11 @@ struct SceneDescription {
     // Simple window / film settings
     int windowWidth  = 1280;
     int windowHeight = 720;
+
+    // Environment map (HDRI image-based lighting)
+    std::string envMapPath;            // path to .hdr file (empty = no env map)
+    float       envMapIntensity = 1.0f; // radiance multiplier
+    float       envMapRotation  = 0.0f; // Y-axis rotation in degrees
 };
 
 /// Load a scene description from an XML-like file.

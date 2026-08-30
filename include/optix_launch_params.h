@@ -74,6 +74,10 @@ struct LaunchParams {
     const cudaTextureObject_t* texObjects;
     int                        textureCount;
 
+    // ── Environment map (HDRI IBL) ──────────────────────────────────
+    EnvMapData envMap;
+    bool       hasEnvMap;
+
     // ── Wavefront mode SoA ──────────────────────────────────────────
     // All pointers are null/zero in megakernel mode.
     // Populated each frame by cudaRenderWavefront() before optixLaunch.

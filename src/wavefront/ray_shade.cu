@@ -120,6 +120,9 @@ __global__ void wfShade(
 
     // ── a) Miss path — ray escaped the scene ────────────────────────────
     if (triIdx < 0) {
+        // Accumulate environment map radiance (MIS weighted)
+        const DirectLightingContext ctx = makeDirectLightingContext(scene);
+        accumulateEnvMapHit(rikudo, ctx);
 
         storePathState(wf, idx, rikudo);
         wf.rngState[idx] = rng.state;
@@ -149,6 +152,10 @@ __global__ void wfShade(
             if (prepareSpotlightNEE(rikudo, its, bsdf, ctx, spotIdx, sr)){
                 enqueueShadowRay(wf, sr, static_cast<uint32_t>(idx));
             }
+        }
+
+        if (prepareEnvMapNEE(rikudo, rng, its, bsdf, ctx, sr)){
+            enqueueShadowRay(wf, sr, static_cast<uint32_t>(idx));
         }
     } else {
         rikudo.specularBounce = true;

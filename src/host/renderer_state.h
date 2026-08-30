@@ -77,6 +77,14 @@ extern std::vector<cudaTextureObject_t> s_texObjects_h;  // texture object handl
 extern cudaTextureObject_t*             s_texObjects_d;  // device array of handles
 extern int                              s_textureCount;
 
+// ── Environment map (HDRI IBL) ──────────────────────────────────────
+extern EnvMapData    s_envMap_h;              // host-side copy (pointers are device)
+extern bool          s_hasEnvMap;
+extern cudaArray_t   s_envMapCuArray;         // HDR float4 pixel data on device
+extern cudaTextureObject_t s_envMapTexObj;     // texture object handle
+extern float*        s_envMapMarginalCdf_d;   // device: [height+1]
+extern float*        s_envMapConditionalCdf_d; // device: [height * (width+1)]
+
 // ---------------------------------------------------------------------------
 //  OptiX state (RT-core acceleration)
 // ---------------------------------------------------------------------------
@@ -146,6 +154,7 @@ void freeOptixState();
 
 // scene_upload.cu
 void freeSceneUploads();
+void freeEnvMapState();
 
 // denoiser.cu
 void denoiseAndPresent(uint32_t* devPtr, int width, int height);

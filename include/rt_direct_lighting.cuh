@@ -31,6 +31,7 @@
 #include "rt_emitter_sampling.cuh"
 #include "rt_constants.cuh"
 #include "rt_shading_context.cuh"
+#include "rt_env_map.cuh"
 
 __device__ __forceinline__ float convertAreaPDFtoSolidAnglePDF(
     const float lightPDFArea,
@@ -225,5 +226,90 @@ __device__ __forceinline__ bool prepareSpotlightNEE(
     shadowRay.direction    = dirToLight;
     shadowRay.tMax         = dist - RT_EPSILON;
     shadowRay.contribution = mul3(mul3(mul3(fr, spotLe), cosSurface), pathRecord.throughput);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  Environment map hit: called when a BSDF-sampled ray MISSES all geometry.
+//  Applies the MIS BRDF weight (balance heuristic) to the env map radiance.
+//  For specular bounces, weight = 1 (BRDF PDF is a delta, env PDF is finite).
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ void accumulateEnvMapHit(
+    PathState& pathRecord,
+    const DirectLightingContext& lightingCtx)
+{
+    if (!lightingCtx.hasEnvMap) return;
+
+    const Float3 envRadiance = envMapEval(lightingCtx.envMap, pathRecord.ray.direction);
+
+    float brdfWeight = 1.0f;
+
+    if (!pathRecord.specularBounce) {
+        const float envPdf = envMapPdf(lightingCtx.envMap, pathRecord.ray.direction);
+        const float sumPdf = pathRecord.brdfPDF + envPdf;
+        if (sumPdf > 0.0f)
+            brdfWeight = pathRecord.brdfPDF / sumPdf;
+        else
+            brdfWeight = 0.0f;
+    }
+
+    pathRecord.accumulatedColor = add3(
+        pathRecord.accumulatedColor,
+        mul3(mul3(envRadiance, pathRecord.throughput), brdfWeight));
+}
+
+// ---------------------------------------------------------------------------
+//  NEE for the environment map: importance-sample a direction from the env
+//  map CDF, evaluate the BSDF, apply MIS light weight, and fill the shadow
+//  ray.  The caller traces the shadow ray to test visibility.
+//  Returns false if the sample carries no energy (early exit).
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ bool prepareEnvMapNEE(
+    PathState& pathRecord,
+    RngState& rng,
+    const Intersection& its,
+    const BsdfData& bsdf,
+    const DirectLightingContext& lightingCtx,
+    ShadowRayRecord& shadowRay)
+{
+    if (!lightingCtx.hasEnvMap) return false;
+
+    const float u0 = rngNextFloat01(rng);
+    const float u1 = rngNextFloat01(rng);
+
+    EnvMapSampleResult envSample = envMapSample(lightingCtx.envMap, u0, u1);
+
+    if (envSample.pdf <= 0.0f) return false;
+    if (envSample.radiance.x <= 0.0f && envSample.radiance.y <= 0.0f && envSample.radiance.z <= 0.0f)
+        return false;
+
+    // Check that the sampled direction is on the correct hemisphere
+    const float cosAtSurface = dot3(its.hitNormal, envSample.direction);
+    if (cosAtSurface <= 0.0f) return false;
+
+    // Evaluate BSDF for the sampled env map direction
+    BsdfQueryRecord bsdfQuery{};
+    bsdfQuery.wi      = toLocalFromNormal(its.hitNormal, mul3(pathRecord.ray.direction, -1.0f));
+    bsdfQuery.wo      = toLocalFromNormal(its.hitNormal, envSample.direction);
+    bsdfQuery.measure = BSDF_ESolidAngle;
+
+    const Float3 fr = bsdfEval(bsdf, bsdfQuery);
+
+    // MIS: balance heuristic — weight = lightPdf / (lightPdf + brdfPdf)
+    const float brdfPdf = bsdfPdf(bsdf, bsdfQuery);
+    const float sumPdf  = brdfPdf + envSample.pdf;
+    if (sumPdf <= 0.0f) return false;
+    const float lightWeight = envSample.pdf / sumPdf;
+
+    // contribution = fr * Le * cos(θ) / envPdf * weight * throughput
+    Float3 contrib = mul3(fr, envSample.radiance);
+    contrib = mul3(contrib, cosAtSurface);
+    contrib = div3(contrib, envSample.pdf);
+    contrib = mul3(contrib, lightWeight);
+
+    shadowRay.origin       = its.hitPoint;
+    shadowRay.direction    = envSample.direction;
+    shadowRay.tMax         = 1e30f - RT_EPSILON;   // env map is infinitely far away
+    shadowRay.contribution = mul3(contrib, pathRecord.throughput);
     return true;
 }

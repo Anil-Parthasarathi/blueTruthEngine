@@ -48,6 +48,9 @@ struct DirectLightingContext {
     const cudaTextureObject_t* texObjects;
     const int* triangleMaterialIds;
     int textureCount;
+    // Environment map (HDRI IBL)
+    EnvMapData envMap;
+    bool       hasEnvMap;
 };
 
 // ---------------------------------------------------------------------------
