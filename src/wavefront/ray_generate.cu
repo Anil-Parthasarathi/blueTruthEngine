@@ -64,13 +64,22 @@ __global__ void wfGenerate(
     wf.rayOrigin[idx]       = primaryRay.origin;
     wf.rayDir[idx]          = primaryRay.direction;
     wf.throughput[idx]      = {1.f, 1.f, 1.f};
-    wf.radiance[idx]        = {0.f, 0.f, 0.f};
     wf.eta[idx]             = 1.f;
     wf.brdfPDF[idx]         = 0.f;
     wf.specularBounce[idx]  = 1;
     wf.bounceCount[idx]     = 0;
     wf.pixelIndex[idx]      = static_cast<uint32_t>(idx);
     wf.rngState[idx]        = rng.state;
+
+    // Until the primary hit picks a lobe, a path is provisionally diffuse.
+    wf.styleChannel[idx]    = static_cast<unsigned char>(STYLE_CH_INDIRECT_DIFFUSE);
+    if (wf.edgeFactor) wf.edgeFactor[idx] = 0.f;
+
+    // Clear this frame's radiance channels.  In physical mode all six pointers
+    // alias wf.radiance, so the redundant stores are harmless and it keeps the
+    // kernel free of a style-mode branch.
+    for (int ch = 0; ch < STYLE_CH_COUNT; ++ch)
+        wf.channel[ch][idx] = {0.f, 0.f, 0.f};
 
     // ── 4. Enqueue for extend ────────────────────────────────────────────
     const int slot = atomicAdd(wf.rayCount, 1);

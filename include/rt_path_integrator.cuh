@@ -22,11 +22,14 @@
 //  throughput by the sample weight, and records brdfPDF for the next bounce's
 //  emitter-hit MIS.
 // ---------------------------------------------------------------------------
+//  `outLobe`, when non-null, receives the DisneyLobe the sample came from.  The
+//  integrator uses it at the primary hit to fix the path's style channel.
 __device__ __forceinline__ void scatterPath(
     PathState& pathRecord,
     RngState& rng,
     const Intersection& its,
-    const BsdfData& bsdf)
+    const BsdfData& bsdf,
+    int* outLobe = nullptr)
 {
     BsdfQueryRecord bsdfQueryIndirect{};
     bsdfQueryIndirect.wi       = toLocalFromNormal(its.hitNormal, mul3(pathRecord.ray.direction, -1.0f));
@@ -34,7 +37,7 @@ __device__ __forceinline__ void scatterPath(
 
     const float u0 = rngNextFloat01(rng);
     const float u1 = rngNextFloat01(rng);
-    Float3 sampleWeight = bsdfSample(bsdf, bsdfQueryIndirect, u0, u1);
+    Float3 sampleWeight = bsdfSample(bsdf, bsdfQueryIndirect, u0, u1, nullptr, outLobe);
 
     pathRecord.brdfPDF = bsdfPdf(bsdf, bsdfQueryIndirect);
 

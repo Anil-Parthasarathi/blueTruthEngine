@@ -29,10 +29,19 @@ __global__ void presentLinearKernel(uint32_t* framebuffer, const Float3* linear,
     framebuffer[idx] = packPixelGamma(linear[idx]);
 }
 
-// Lazily creates / resizes the denoiser for the given resolution.
-static void ensureDenoiser(int width, int height)
+// Whether the denoiser currently in hand was created with guide layers.  Only
+// the wavefront renderer writes the albedo and normal AOVs, so asking for
+// guides while running the megakernel would hand OptiX two all-zero images and
+// make its output worse than no guides at all.
+static bool s_denoiserGuided = false;
+
+// Lazily creates / resizes the denoiser for the given resolution and guide
+// configuration.
+static void ensureDenoiser(int width, int height, bool guided)
 {
-    if (s_denoiser && s_denoiserWidth == width && s_denoiserHeight == height) return;
+    if (s_denoiser && s_denoiserWidth == width && s_denoiserHeight == height &&
+        s_denoiserGuided == guided)
+        return;
 
     if (s_denoiser)          { optixDenoiserDestroy(s_denoiser); s_denoiser = nullptr; }
     if (s_denoiserState)     { cudaFree(reinterpret_cast<void*>(s_denoiserState));   s_denoiserState = 0; }
@@ -40,9 +49,13 @@ static void ensureDenoiser(int width, int height)
     if (s_denoisedBuffer_d)  { cudaFree(s_denoisedBuffer_d); s_denoisedBuffer_d = nullptr; }
     if (!s_denoiserIntensity) CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_denoiserIntensity), sizeof(float)));
 
+    // Albedo and normal guides let the denoiser tell a texture edge from noise,
+    // so it stops smearing detail across material boundaries.  The AOVs that
+    // feed them are written in BOTH style modes, so the photorealistic wavefront
+    // render benefits too — this is not a stylization-only feature.
     OptixDenoiserOptions options = {};
-    options.guideAlbedo  = 0;
-    options.guideNormal  = 0;
+    options.guideAlbedo  = guided ? 1 : 0;
+    options.guideNormal  = guided ? 1 : 0;
     options.denoiseAlpha = OPTIX_DENOISER_ALPHA_MODE_COPY;
     OPTIX_CHECK(optixDenoiserCreate(s_optixContext, OPTIX_DENOISER_MODEL_KIND_HDR,
                                     &options, &s_denoiser));
@@ -65,24 +78,38 @@ static void ensureDenoiser(int width, int height)
 
     s_denoiserWidth  = width;
     s_denoiserHeight = height;
+    s_denoiserGuided = guided;
 }
 
-// Runs the denoiser on the accumulated linear image and tonemaps the result
-// into the mapped PBO (devPtr).
-void denoiseAndPresent(uint32_t* devPtr, int width, int height)
+static OptixImage2D makeImage(const void* data, int width, int height,
+                              OptixPixelFormat format, size_t pixelStride)
 {
-    ensureDenoiser(width, height);
+    OptixImage2D img = {};
+    img.data               = reinterpret_cast<CUdeviceptr>(data);
+    img.width              = static_cast<unsigned int>(width);
+    img.height             = static_cast<unsigned int>(height);
+    img.rowStrideInBytes   = static_cast<unsigned int>(static_cast<size_t>(width) * pixelStride);
+    img.pixelStrideInBytes = static_cast<unsigned int>(pixelStride);
+    img.format             = format;
+    return img;
+}
 
-    OptixImage2D inputImage = {};
-    inputImage.data              = reinterpret_cast<CUdeviceptr>(s_accumBuffer_d);
-    inputImage.width             = static_cast<unsigned int>(width);
-    inputImage.height            = static_cast<unsigned int>(height);
-    inputImage.rowStrideInBytes  = static_cast<unsigned int>(width * sizeof(Float3));
-    inputImage.pixelStrideInBytes = static_cast<unsigned int>(sizeof(Float3));
-    inputImage.format            = OPTIX_PIXEL_FORMAT_FLOAT3;
+// Denoise one linear Float3 buffer into another.  Shared by the whole-image
+// path and by the per-channel anime path, so both use the same guide layers and
+// the same intensity estimate.
+static void denoiseBuffer(const Float3* src, Float3* dst, int width, int height)
+{
+    // Only the wavefront renderer fills the AOVs, so it is the only one that can
+    // supply guide layers.
+    const bool guided = (s_renderMode == RenderMode::Wavefront) &&
+                        s_accumAlbedo_d != nullptr && s_accumNormal_d != nullptr;
 
-    OptixImage2D outputImage = inputImage;
-    outputImage.data = reinterpret_cast<CUdeviceptr>(s_denoisedBuffer_d);
+    ensureDenoiser(width, height, guided);
+
+    OptixImage2D inputImage  = makeImage(src, width, height,
+                                         OPTIX_PIXEL_FORMAT_FLOAT3, sizeof(Float3));
+    OptixImage2D outputImage = makeImage(dst, width, height,
+                                         OPTIX_PIXEL_FORMAT_FLOAT3, sizeof(Float3));
 
     OPTIX_CHECK(optixDenoiserComputeIntensity(s_denoiser, 0, &inputImage,
                 s_denoiserIntensity, s_denoiserScratch, s_denoiserScratchSize));
@@ -92,6 +119,13 @@ void denoiseAndPresent(uint32_t* devPtr, int width, int height)
     params.blendFactor  = 0.0f;
 
     OptixDenoiserGuideLayer guideLayer = {};
+    if (guided) {
+        guideLayer.albedo = makeImage(s_accumAlbedo_d, width, height,
+                                      OPTIX_PIXEL_FORMAT_FLOAT3, sizeof(Float3));
+        guideLayer.normal = makeImage(s_accumNormal_d, width, height,
+                                      OPTIX_PIXEL_FORMAT_FLOAT3, sizeof(Float3));
+    }
+
     OptixDenoiserLayer layer = {};
     layer.input  = inputImage;
     layer.output = outputImage;
@@ -100,6 +134,20 @@ void denoiseAndPresent(uint32_t* devPtr, int width, int height)
                 s_denoiserState, s_denoiserStateSize,
                 &guideLayer, &layer, 1, 0, 0,
                 s_denoiserScratch, s_denoiserScratchSize));
+}
+
+void denoiseChannel(const Float3* src, Float3* dst, int width, int height)
+{
+    if (!src || !dst) return;
+    denoiseBuffer(src, dst, width, height);
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+// Runs the denoiser on the accumulated linear image and tonemaps the result
+// into the mapped PBO (devPtr).
+void denoiseAndPresent(uint32_t* devPtr, int width, int height)
+{
+    denoiseBuffer(s_accumBuffer_d, s_denoisedBuffer_d, width, height);
 
     dim3 block(16, 16);
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
@@ -126,4 +174,5 @@ void freeDenoiserState()
     if (s_denoiserIntensity){ cudaFree(reinterpret_cast<void*>(s_denoiserIntensity)); s_denoiserIntensity = 0; }
     if (s_denoisedBuffer_d) { cudaFree(s_denoisedBuffer_d); s_denoisedBuffer_d = nullptr; }
     s_denoiserWidth = 0; s_denoiserHeight = 0;
+    s_denoiserGuided = false;
 }

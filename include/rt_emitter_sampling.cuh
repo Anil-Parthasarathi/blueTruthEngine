@@ -28,7 +28,26 @@ struct EmitterSamplingData {
     const int* emitterTriIndices;
     const float* emitterTriCdf;
     const float* sceneEmitterCdf;
+
+    // The environment light joins the emitter selection as one extra virtual
+    // slot rather than being bolted on beside it, so a single discrete draw
+    // still chooses among every light in the scene and the MIS weights stay
+    // consistent.  `selectCount` is the number of weights in sceneEmitterCdf:
+    // emitterCount normally, emitterCount + 1 when the environment is present.
+    // `envSlot` is that extra index, or -1 when there is no environment.
+    //
+    // Keeping these as plain ints (rather than an EnvLightData pointer) keeps
+    // this header free of any environment dependency: the actual environment
+    // sampling lives in rt_direct_lighting.cuh.
+    int selectCount;
+    int envSlot;
 };
+
+// Number of selectable emitters, environment included.
+__device__ __forceinline__ int emitterSelectCount(const EmitterSamplingData& s)
+{
+    return (s.selectCount > 0) ? s.selectCount : s.emitterCount;
+}
 
 __device__ __forceinline__ int sampleCdfReuse(
     const float* cdf, int count, float& u, float& outPdf)
@@ -105,6 +124,39 @@ struct RandomEmitterSample {
     MeshSample mesh;
 };
 
+// Result of the single discrete draw that chooses which light to sample.
+struct EmitterSelection {
+    int   slot;       // mesh emitter index, or envSlot, or -1 if nothing selectable
+    float selectPdf;  // discrete probability of having chosen this slot
+    bool  isEnv;      // true when `slot` is the virtual environment slot
+};
+
+// Choose one light (mesh emitter or environment) proportional to the scene
+// emitter CDF.  `u` is remapped in place to the position within the chosen bin,
+// so the caller can reuse it for the light's own internal sampling without
+// spending another RNG draw — the same CDF-reuse chaining sampleMeshEmitter
+// already relies on.
+__device__ __forceinline__ EmitterSelection selectSceneEmitter(
+    const EmitterSamplingData& sampling, float& u)
+{
+    EmitterSelection sel{};
+    sel.slot      = -1;
+    sel.selectPdf = 0.0f;
+    sel.isEnv     = false;
+
+    const int n = emitterSelectCount(sampling);
+    if (n <= 0 || !sampling.sceneEmitterCdf) return sel;
+
+    float pdf = 0.0f;
+    const int slot = sampleCdfReuse(sampling.sceneEmitterCdf, n, u, pdf);
+    if (pdf <= 0.0f) return sel;
+
+    sel.slot      = slot;
+    sel.selectPdf = pdf;
+    sel.isEnv     = (sampling.envSlot >= 0 && slot == sampling.envSlot);
+    return sel;
+}
+
 __device__ __forceinline__ RandomEmitterSample sampleRandomEmitter(
     const EmitterSamplingData& sampling,
     float u0, float u1);
@@ -172,6 +224,39 @@ __device__ __forceinline__ float emitterProbabilityEvaluatorFromMesh(
     return 1.0f / emitter.areaSum;
 }
 
+// Sample a point on an ALREADY-CHOSEN mesh emitter and fill the query record.
+// Split out from sampleGenerator so the environment can share the one discrete
+// emitter-selection draw without duplicating it.
+__device__ __forceinline__ Float3 sampleGeneratorForEmitter(
+    const EmitterSamplingData& sampling,
+    int emitterIndex,
+    float selectPdf,
+    EmitterQueryRecord& emitterQuery,
+    float u0, float u1)
+{
+    emitterQuery.emitterPdf = 0.0f;
+    if (emitterIndex < 0 || emitterIndex >= sampling.emitterCount || !sampling.emitters)
+        return {0.0f, 0.0f, 0.0f};
+
+    const EmitterData e = sampling.emitters[emitterIndex];
+    const MeshSample mesh = sampleMeshEmitter(
+        sampling.triangles,
+        sampling.emitterTriIndices + e.triIndexOffset,
+        sampling.emitterTriCdf + e.cdfOffset,
+        e.triCount,
+        u0, u1);
+
+    if (mesh.triangleIndex < 0) return {0.0f, 0.0f, 0.0f};
+
+    emitterQuery.hitPoint = mesh.position;
+    emitterQuery.hitNormal = mesh.normal;
+    emitterQuery.pdf = mesh.pdf;
+    emitterQuery.directionToLight = normalize3(sub3(emitterQuery.hitPoint, emitterQuery.originPoint));
+    emitterQuery.emitterPdf = selectPdf;
+
+    return checkRadiance(e.radiance, emitterQuery);
+}
+
 __device__ __forceinline__ Float3 sampleGenerator(
     const EmitterSamplingData& sampling,
     EmitterQueryRecord& emitterQuery,
@@ -207,12 +292,13 @@ __device__ __forceinline__ RandomEmitterSample sampleRandomEmitter(
 
     if (sampling.emitterCount <= 0) return out;
 
-    float epdf = 0.0f;
-    int eIdx = sampleCdfReuse(sampling.sceneEmitterCdf, sampling.emitterCount, u0, epdf);
-    out.emitterIndex = eIdx;
-    out.emitterPdf = epdf;
+    const EmitterSelection sel = selectSceneEmitter(sampling, u0);
+    if (sel.slot < 0 || sel.isEnv) return out;
 
-    const EmitterData e = sampling.emitters[eIdx];
+    out.emitterIndex = sel.slot;
+    out.emitterPdf = sel.selectPdf;
+
+    const EmitterData e = sampling.emitters[sel.slot];
     out.mesh = sampleMeshEmitter(
         sampling.triangles,
         sampling.emitterTriIndices + e.triIndexOffset,

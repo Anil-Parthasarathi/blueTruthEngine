@@ -99,6 +99,8 @@ add_optix_ptx_lib(optix_programs     src/optix_programs.cu)
 add_optix_ptx_lib(optix_wf_extend    src/wavefront/ray_extend.cu)
 # 3. Wavefront shadow raygen (ray_connect.cu)
 add_optix_ptx_lib(optix_wf_shadow    src/wavefront/ray_connect.cu)
+# 4. Wavefront outline probe raygen (ray_outline.cu) — anime style mode only
+add_optix_ptx_lib(optix_wf_outline   src/wavefront/ray_outline.cu)
 
 # Helper macro: embed one PTX file via bin2c.
 macro(add_ptx_embed EMBED_TARGET OBJECT_TARGET VAR_NAME OUTPUT_FILE)
@@ -120,10 +122,12 @@ endmacro()
 set(EMBEDDED_PTX_C          "${CMAKE_BINARY_DIR}/embedded_optix_ptx.c")
 set(EMBEDDED_WF_EXTEND_C    "${CMAKE_BINARY_DIR}/embedded_wf_extend_ptx.c")
 set(EMBEDDED_WF_SHADOW_C    "${CMAKE_BINARY_DIR}/embedded_wf_shadow_ptx.c")
+set(EMBEDDED_WF_OUTLINE_C   "${CMAKE_BINARY_DIR}/embedded_wf_outline_ptx.c")
 
 add_ptx_embed(embed_optix_ptx       optix_programs   optixProgramsPtx     "${EMBEDDED_PTX_C}")
 add_ptx_embed(embed_wf_extend_ptx   optix_wf_extend  optixWfExtendPtx     "${EMBEDDED_WF_EXTEND_C}")
 add_ptx_embed(embed_wf_shadow_ptx   optix_wf_shadow  optixWfShadowPtx     "${EMBEDDED_WF_SHADOW_C}")
+add_ptx_embed(embed_wf_outline_ptx  optix_wf_outline optixWfOutlinePtx    "${EMBEDDED_WF_OUTLINE_C}")
 
 # ── RedTruthEngine executable ────────────────────────────────────────
 add_executable(${PROJECT_NAME}
@@ -138,10 +142,15 @@ add_executable(${PROJECT_NAME}
     src/host/wavefront_host.cu     # wavefront buffers + per-frame bounce loop
     src/wavefront/ray_generate.cu  # wfGenerate kernel  (regular CUDA, linked to exe)
     src/wavefront/ray_shade.cu     # wfShade kernel     (regular CUDA, linked to exe)
-    src/wavefront/ray_present.cu   # wfPresent kernel   (regular CUDA, linked to exe)
+    src/wavefront/ray_present.cu   # wfAccumulate + wfPresent (regular CUDA, linked to exe)
 )
 
-add_dependencies(${PROJECT_NAME} embed_optix_ptx embed_wf_extend_ptx embed_wf_shadow_ptx)
+add_dependencies(${PROJECT_NAME}
+    embed_optix_ptx
+    embed_wf_extend_ptx
+    embed_wf_shadow_ptx
+    embed_wf_outline_ptx
+)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include

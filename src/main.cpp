@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <fstream>
 #include <cmath>
+#include <algorithm>
 
 static int  g_windowWidth   = 1280;
 static int  g_windowHeight  = 720;
@@ -55,6 +56,11 @@ static constexpr bool USE_WAVEFRONT = true;
 // any animation / camera-movement code you add in the future.
 static bool g_sceneChanged  = false;
 static int  g_accumSamples  = 0;   // samples accumulated since last reset
+static bool g_representOnly = false; // restyle without tracing another sample
+
+// Host-side copy of the uploaded StyleData table so live knobs can mutate it
+// and push the change back to the GPU without rebuilding the scene.
+static std::vector<StyleData> g_styleTable;
 
 inline void markSceneChanged() { g_sceneChanged = true; }
 
@@ -557,6 +563,70 @@ static ImageRGBA loadImageRGBA(const std::string& path)
     return img;
 }
 
+/// Load a float HDR image (.hdr) for use as an environment map.
+///
+/// stbi_loadf keeps the values linear and unclamped, which is the whole point:
+/// an HDRI's sun can be thousands of times brighter than its sky, and that ratio
+/// is exactly what makes environment importance sampling worth doing.
+struct ImageHDR {
+    std::vector<float> pixels;   // width*height*channels, row-major, top row = +Y
+    int width    = 0;
+    int height   = 0;
+    int channels = 3;
+};
+
+static ImageHDR loadImageHDR(const std::string& path)
+{
+    ImageHDR img;
+    if (path.empty()) return img;
+
+    int w = 0, h = 0, c = 0;
+    float* data = stbi_loadf(path.c_str(), &w, &h, &c, 3);
+    if (!data) {
+        std::cerr << "[env] Failed to load HDRI \"" << path << "\": "
+                  << stbi_failure_reason() << "\n";
+        return img;
+    }
+
+    img.width    = w;
+    img.height   = h;
+    img.channels = 3;
+    img.pixels.assign(data, data + static_cast<size_t>(w) * static_cast<size_t>(h) * 3);
+    stbi_image_free(data);
+
+    std::cout << "[env] Loaded HDRI \"" << path << "\" ("
+              << w << "×" << h << ")\n";
+    return img;
+}
+
+/// Build a 1-D ramp strip as RGBA8 texels.
+///
+/// A ramp file is normally a wide, 1-pixel-tall PNG authored in a paint program;
+/// only its top row is read, so a taller image still works.
+static ImageRGBA loadRampStrip(const std::string& path)
+{
+    ImageRGBA img;
+    img.width  = 0;
+    img.height = 1;
+    if (path.empty()) return img;
+
+    int w = 0, h = 0, channels = 0;
+    unsigned char* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
+    if (!data) {
+        std::cerr << "[style] Failed to load ramp \"" << path
+                  << "\" — falling back to procedural bands\n";
+        return img;
+    }
+
+    img.width  = w;
+    img.height = 1;
+    img.pixels.assign(data, data + static_cast<size_t>(w) * 4);   // top row only
+    stbi_image_free(data);
+
+    std::cout << "[style] Loaded ramp \"" << path << "\" (" << w << " texels)\n";
+    return img;
+}
+
 static float triangleAreaHost(const TriangleData& t)
 {
     const float ax = t.v1.x - t.v0.x;
@@ -594,6 +664,76 @@ static void keyCallback(GLFWwindow* window, int key, int /*scancode*/,
     // Toggle the OptiX AI denoiser (off by default).
     if (key == GLFW_KEY_D && action == GLFW_PRESS)
         cudaToggleDenoiser();
+
+    // A/B photorealistic vs stylized.  Switching modes changes the channel
+    // layout, so accumulation restarts — that is expected.  Photoreal stays a
+    // first-class mode: N off restores the original path and footprint.
+    if (key == GLFW_KEY_N && action == GLFW_PRESS) {
+        cudaToggleStyleMode();
+        markSceneChanged();
+    }
+
+    // Cycle the AOV / channel debug views.  Purely presentational, so it costs
+    // one kernel launch and never disturbs the accumulated data.
+    if (key == GLFW_KEY_V && action == GLFW_PRESS) {
+        cudaCycleDebugView();
+        g_representOnly = true;
+    }
+
+    // Live style knobs — mutate the host table, re-upload, and re-present the
+    // already-converged image.  No re-accumulation.
+    auto restyle = [&]() {
+        if (g_styleTable.empty()) return;
+        cudaInitStyles(g_styleTable.data(), static_cast<int>(g_styleTable.size()));
+        g_representOnly = true;
+    };
+
+    if (key == GLFW_KEY_LEFT_BRACKET && action == GLFW_PRESS) {
+        for (auto& s : g_styleTable)
+            s.diffuseBands = std::max(1, s.diffuseBands - 1);
+        if (!g_styleTable.empty())
+            std::cout << "[style] diffuseBands = " << g_styleTable[0].diffuseBands << "\n";
+        restyle();
+    }
+    if (key == GLFW_KEY_RIGHT_BRACKET && action == GLFW_PRESS) {
+        for (auto& s : g_styleTable)
+            s.diffuseBands = std::min(8, s.diffuseBands + 1);
+        if (!g_styleTable.empty())
+            std::cout << "[style] diffuseBands = " << g_styleTable[0].diffuseBands << "\n";
+        restyle();
+    }
+    if (key == GLFW_KEY_MINUS && action == GLFW_PRESS) {
+        for (auto& s : g_styleTable)
+            s.indirectGain = std::max(0.0f, s.indirectGain - 0.1f);
+        if (!g_styleTable.empty())
+            std::cout << "[style] indirectGain = " << g_styleTable[0].indirectGain << "\n";
+        restyle();
+    }
+    if (key == GLFW_KEY_EQUAL && action == GLFW_PRESS) {
+        for (auto& s : g_styleTable)
+            s.indirectGain = std::min(4.0f, s.indirectGain + 0.1f);
+        if (!g_styleTable.empty())
+            std::cout << "[style] indirectGain = " << g_styleTable[0].indirectGain << "\n";
+        restyle();
+    }
+    if (key == GLFW_KEY_COMMA && action == GLFW_PRESS) {
+        for (auto& s : g_styleTable)
+            s.lineStrength = std::max(0.0f, s.lineStrength - 0.1f);
+        if (!g_styleTable.empty())
+            std::cout << "[style] lineStrength = " << g_styleTable[0].lineStrength
+                      << " (re-accumulating — outlines modulate throughput)\n";
+        restyle();
+        markSceneChanged();   // baked into the path, not a present-time operator
+    }
+    if (key == GLFW_KEY_PERIOD && action == GLFW_PRESS) {
+        for (auto& s : g_styleTable)
+            s.lineStrength = std::min(2.0f, s.lineStrength + 0.1f);
+        if (!g_styleTable.empty())
+            std::cout << "[style] lineStrength = " << g_styleTable[0].lineStrength
+                      << " (re-accumulating — outlines modulate throughput)\n";
+        restyle();
+        markSceneChanged();
+    }
 }
 
 static void framebufferSizeCallback(GLFWwindow* /*window*/, int w, int h)
@@ -727,6 +867,86 @@ int main(int argc, char** argv)
         return -1;
     };
 
+    // ── Style table + ramp textures ──────────────────────────────────
+    //  Styles are uploaded as a flat table indexed by BsdfData::styleId.  Ramps
+    //  get their own texture table so several styles can share one strip.
+    std::vector<StyleData> styleTable;
+    {
+        std::vector<ImageRGBA> rampImages;
+        std::vector<std::string> rampPaths;
+
+        auto rampIndexOf = [&](const std::string& path) -> int {
+            if (path.empty()) return -1;
+            for (int i = 0; i < static_cast<int>(rampPaths.size()); ++i) {
+                if (rampPaths[static_cast<size_t>(i)] == path) return i;
+            }
+            ImageRGBA img = loadRampStrip(path);
+            if (img.pixels.empty()) return -1;
+            rampPaths.push_back(path);
+            rampImages.push_back(std::move(img));
+            return static_cast<int>(rampPaths.size()) - 1;
+        };
+
+        styleTable.reserve(scene.styles.size());
+        for (const auto& s : scene.styles) {
+            StyleData d{};
+            d.diffuseRampTex = rampIndexOf(s.diffuseRamp);
+            d.diffuseBands   = s.diffuseBands;
+            d.bandSoftness   = s.bandSoftness;
+            d.toneScale      = s.toneScale;
+
+            d.specThreshold = s.specThreshold;
+            d.specSoftness  = s.specSoftness;
+            d.specIntensity = s.specIntensity;
+
+            d.rimStrength = s.rimStrength;
+            d.rimPower    = s.rimPower;
+            d.rimColor    = { s.rimColorR, s.rimColorG, s.rimColorB };
+
+            d.reflectBands   = s.reflectBands;
+            d.reflectGain    = s.reflectGain;
+            d.reflectTintMix = s.reflectTintMix;
+            d.reflectTint    = { s.reflectTintR, s.reflectTintG, s.reflectTintB };
+
+            d.transmitBands = s.transmitBands;
+            d.transmitGain  = s.transmitGain;
+            d.chromaShift   = s.chromaShift;
+
+            d.indirectGain = s.indirectGain;
+
+            d.lineColor              = { s.lineColorR, s.lineColorG, s.lineColorB };
+            d.lineWidth              = s.lineWidth;
+            d.lineStrength           = s.lineStrength;
+            d.outlineNormalThreshold = s.outlineNormalThreshold;
+            d.outlineDepthThreshold  = s.outlineDepthThreshold;
+
+            styleTable.push_back(d);
+        }
+        g_styleTable = styleTable;
+
+        if (!rampImages.empty()) {
+            std::vector<const uint8_t*> ptrs;
+            std::vector<int>            widths;
+            ptrs.reserve(rampImages.size());
+            widths.reserve(rampImages.size());
+            for (const auto& img : rampImages) {
+                ptrs.push_back(img.pixels.empty() ? nullptr : img.pixels.data());
+                widths.push_back(img.width);
+            }
+            cudaInitRampTextures(ptrs.data(), widths.data(),
+                                 static_cast<int>(rampImages.size()));
+        }
+    }
+
+    auto styleIndexOf = [&](const std::string& name) -> int {
+        if (name.empty()) return -1;   // no style is the normal photoreal case
+        for (int i = 0; i < static_cast<int>(scene.styles.size()); ++i) {
+            if (scene.styles[static_cast<size_t>(i)].name == name) return i;
+        }
+        std::cerr << "[scene] material references unknown style: " << name << '\n';
+        std::exit(EXIT_FAILURE);
+    };
+
     // Build BSDF table (templates only; behavior implemented by you later)
     std::vector<BsdfData> bsdfs;
     bsdfs.reserve(scene.bsdfs.size());
@@ -762,19 +982,57 @@ int main(int argc, char** argv)
             std::exit(EXIT_FAILURE);
         }
 
+        d.styleId = -1;   // resolved per material below
         bsdfs.push_back(d);
     }
+
+    // A style is authored on the MATERIAL, but the device reads it through
+    // BsdfData::styleId — one indirection instead of a second per-triangle table.
+    // When two materials share a BSDF but want different styles, the BSDF record
+    // is duplicated with the other styleId.  Scenes have a handful of BSDFs, so
+    // duplicating a few is cheaper than an extra per-triangle lookup in every
+    // shading kernel.
+    struct BsdfVariantKey { int baseBsdfId; int styleId; int resolvedId; };
+    std::vector<BsdfVariantKey> bsdfVariants;
+
+    auto bsdfVariantFor = [&](int baseBsdfId, int styleId) -> int {
+        if (styleId < 0) return baseBsdfId;
+
+        for (const auto& v : bsdfVariants) {
+            if (v.baseBsdfId == baseBsdfId && v.styleId == styleId) return v.resolvedId;
+        }
+
+        int resolvedId;
+        if (bsdfs[static_cast<size_t>(baseBsdfId)].styleId < 0) {
+            // First style to claim this BSDF can use the record in place.
+            bsdfs[static_cast<size_t>(baseBsdfId)].styleId = styleId;
+            resolvedId = baseBsdfId;
+        } else {
+            BsdfData copy = bsdfs[static_cast<size_t>(baseBsdfId)];
+            copy.styleId = styleId;
+            bsdfs.push_back(copy);
+            resolvedId = static_cast<int>(bsdfs.size()) - 1;
+        }
+
+        bsdfVariants.push_back({ baseBsdfId, styleId, resolvedId });
+        return resolvedId;
+    };
 
     std::vector<TriangleData> triangles;
     std::vector<int> triangleMaterialIds;
     std::vector<int> triangleBsdfIds;
     std::vector<Float3> triangleEmission;
     std::vector<uint8_t> triangleEmitterFlags;
+    // Per-triangle mesh index.  The outline probes compare object IDs to tell a
+    // silhouette from a crease, which is what lets an outline be found by a ray
+    // rather than by a screen-space filter.
+    std::vector<int> triangleObjectIds;
     triangles.reserve(1024);
     triangleMaterialIds.reserve(1024);
     triangleBsdfIds.reserve(1024);
     triangleEmission.reserve(1024);
     triangleEmitterFlags.reserve(1024);
+    triangleObjectIds.reserve(1024);
 
     // Nori-like emitter list (one emitter per emissive mesh)
     std::vector<EmitterData> emitters;
@@ -785,7 +1043,9 @@ int main(int argc, char** argv)
     float sceneEmitterWeightSum = 0.0f;
 
     // Per-triangle emitter flag: set from scene mesh isEmitter (Nori-style).
+    int meshObjectId = 0;
     for (const auto& mesh : scene.meshes) {
+        const int objectId = meshObjectId++;
         const int matId = materialIndexOf(mesh.materialName);
         if (matId < 0) {
             std::cerr << "[scene] mesh references unknown material: "
@@ -804,7 +1064,7 @@ int main(int argc, char** argv)
                           << mat.bsdfName << '\n';
                 std::exit(EXIT_FAILURE);
             }
-            return id;
+            return bsdfVariantFor(id, styleIndexOf(mat.styleName));
         }();
 
         const Float3 emitColor = { mesh.radianceR, mesh.radianceG, mesh.radianceB };
@@ -824,6 +1084,7 @@ int main(int argc, char** argv)
             triangles.push_back(t);
             triangleMaterialIds.push_back(matId);
             triangleBsdfIds.push_back(bsdfId);
+            triangleObjectIds.push_back(objectId);
             triangleEmitterFlags.push_back(mesh.isEmitter ? static_cast<uint8_t>(1) : static_cast<uint8_t>(0));
 
             if (mesh.isEmitter) {
@@ -878,14 +1139,72 @@ int main(int argc, char** argv)
                              static_cast<int>(triangleEmission.size()));
     cudaInitTriangleEmitterFlags(triangleEmitterFlags.data(),
                                  static_cast<int>(triangleEmitterFlags.size()));
+    cudaInitTriangleObjectIds(triangleObjectIds.data(),
+                              static_cast<int>(triangleObjectIds.size()));
 
-    if (!emitters.empty()) {
-        cudaInitEmitterTable(emitters.data(), static_cast<int>(emitters.size()),
-                             emitterTriIndices.data(), static_cast<int>(emitterTriIndices.size()),
-                             emitterTriCdf.data(), static_cast<int>(emitterTriCdf.size()),
-                             sceneEmitterCdf.data());
-    } else {
-        cudaInitEmitterTable(nullptr, 0, nullptr, 0, nullptr, 0, nullptr);
+    // ── Environment light ────────────────────────────────────────────
+    //  Uploaded BEFORE the emitter table, because the environment participates
+    //  in the same discrete emitter selection as the mesh lights: it gets a
+    //  trailing slot in sceneEmitterCdf weighted by the same power-style metric.
+    //  That is what keeps NEE and BSDF-sampling MIS weights consistent — the
+    //  alternative, treating the environment as a special case outside the CDF,
+    //  is the classic source of subtly wrong environment lighting.
+    {
+        ImageHDR envImage;
+        ImageHDR envBgImage;
+        float    envSelectWeight = 0.0f;
+
+        if (scene.environment.enabled) {
+            envImage = loadImageHDR(scene.environment.filename);
+
+            EnvironmentUpload up{};
+            up.pixels   = envImage.pixels.empty() ? nullptr : envImage.pixels.data();
+            up.width    = envImage.width;
+            up.height   = envImage.height;
+            up.channels = envImage.channels;
+
+            up.intensity  = scene.environment.intensity;
+            up.yawRadians = glm::radians(scene.environment.yawDegrees);
+
+            if (scene.environment.backgroundMode == "color") {
+                up.backgroundMode = ENV_BG_FLAT_COLOR;
+            } else if (scene.environment.backgroundMode == "texture") {
+                up.backgroundMode = ENV_BG_SEPARATE_TEX;
+                envBgImage = loadImageHDR(scene.environment.backgroundFile);
+                up.bgPixels   = envBgImage.pixels.empty() ? nullptr : envBgImage.pixels.data();
+                up.bgWidth    = envBgImage.width;
+                up.bgHeight   = envBgImage.height;
+                up.bgChannels = envBgImage.channels;
+            } else {
+                up.backgroundMode = ENV_BG_USE_ENV;
+            }
+            up.backgroundColor = { scene.environment.backgroundR,
+                                   scene.environment.backgroundG,
+                                   scene.environment.backgroundB };
+
+            envSelectWeight = cudaInitEnvironment(&up);
+        } else {
+            cudaInitEnvironment(nullptr);
+        }
+
+        int selectCount = static_cast<int>(emitters.size());
+        if (envSelectWeight > 0.0f) {
+            sceneEmitterWeightSum += envSelectWeight;
+            sceneEmitterCdf.push_back(sceneEmitterWeightSum);
+            ++selectCount;
+        }
+
+        if (selectCount > 0) {
+            cudaInitEmitterTable(emitters.empty() ? nullptr : emitters.data(),
+                                 static_cast<int>(emitters.size()),
+                                 emitterTriIndices.empty() ? nullptr : emitterTriIndices.data(),
+                                 static_cast<int>(emitterTriIndices.size()),
+                                 emitterTriCdf.empty() ? nullptr : emitterTriCdf.data(),
+                                 static_cast<int>(emitterTriCdf.size()),
+                                 sceneEmitterCdf.data(), selectCount);
+        } else {
+            cudaInitEmitterTable(nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0);
+        }
     }
 
     if (!bsdfs.empty() && !triangleBsdfIds.empty()) {
@@ -894,6 +1213,9 @@ int main(int argc, char** argv)
     } else {
         cudaInitBsdfs(nullptr, 0, nullptr, 0);
     }
+
+    cudaInitStyles(styleTable.empty() ? nullptr : styleTable.data(),
+                   static_cast<int>(styleTable.size()));
 
     // Build and upload spotlight table.
     // caching the cosine so it doesnt have to be found every time the emitter is sampled
@@ -930,7 +1252,15 @@ int main(int argc, char** argv)
     // Apply the render mode chosen at the top of this file.
     cudaSetRenderMode(USE_WAVEFRONT ? RenderMode::Wavefront : RenderMode::Megakernel);
 
+    // Scene default is physical unless the XML asked for anime.  Existing
+    // scenes have no `style` attribute, so they keep rendering photorealistically.
+    if (scene.styleMode == "anime") {
+        cudaSetStyleMode(StyleMode::Anime);
+        std::cout << "[style] Scene requested anime mode (N toggles back to physical)\n";
+    }
+
     std::cout << "[cuda] Ready – entering render loop\n";
+    std::cout << "        keys: N style A/B  V debug view  [ ] bands  - = indirect  , . lines\n";
 
     // ── Render loop ──────────────────────────────────────────────────
     double fpsLastTime  = glfwGetTime();
@@ -946,11 +1276,17 @@ int main(int argc, char** argv)
             cudaResetAccumulation(g_windowWidth, g_windowHeight);
             g_sceneChanged = false;
             g_accumSamples = 0;
+            g_representOnly = false;   // a reset invalidates present-only
         }
 
-        // 1. CUDA renders into the PBO
-        cudaRender(g_windowWidth, g_windowHeight);
-        ++g_accumSamples;
+        // 1. CUDA renders into the PBO — or just re-presents after a style knob.
+        if (g_representOnly) {
+            cudaRepresent(g_windowWidth, g_windowHeight);
+            g_representOnly = false;
+        } else {
+            cudaRender(g_windowWidth, g_windowHeight);
+            ++g_accumSamples;
+        }
 
         // FPS counter — update window title once per second
         ++fpsFrameCount;
@@ -960,7 +1296,8 @@ int main(int argc, char** argv)
             double fps = fpsFrameCount / elapsed;
             char title[128];
             snprintf(title, sizeof(title),
-                     "RedTruthEngine  |  %.1f fps  |  %.2f ms  |  %d spp",
+                     "BlueTruthEngine  |  %s  |  %.1f fps  |  %.2f ms  |  %d spp",
+                     cudaGetStyleMode() == StyleMode::Anime ? "Anime" : "Physical",
                      fps, 1000.0 / fps, g_accumSamples);
             glfwSetWindowTitle(window, title);
             fpsLastTime   = now;

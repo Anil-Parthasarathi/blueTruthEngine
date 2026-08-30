@@ -17,3 +17,22 @@ static constexpr int   MAX_BOUNCES       = 200;
 // Self-intersection epsilon: closest-hit tmin, bounce origin offset, and
 // shadow-ray tMax shortening all use this value.
 static constexpr float RT_EPSILON        = 1e-4f;
+
+// tMax for a shadow ray aimed at the environment light.  There is no finite
+// distance to shorten against, so the ray must reach past all geometry; this
+// matches the 1e30f tmax traceClosest already uses.
+static constexpr float RT_ENV_TMAX       = 1e30f;
+
+// ---------------------------------------------------------------------------
+//  Ray-probed outlines (anime style mode only)
+// ---------------------------------------------------------------------------
+// Outlines are found by shooting probe rays around each path vertex and
+// classifying discontinuities, rather than filtering the final image.  Because
+// the edge factor modulates path THROUGHPUT, a line seen inside a mirror is a
+// real line on that reflected path — which a screen-space filter cannot do.
+//
+// Cost is OUTLINE_PROBE_COUNT extra rays per active path per bounce, so the
+// depth cap keeps it bounded: lines beyond a couple of bounces are not visible
+// anyway.
+static constexpr int   OUTLINE_MAX_DEPTH   = 2;
+static constexpr int   OUTLINE_PROBE_COUNT = 4;

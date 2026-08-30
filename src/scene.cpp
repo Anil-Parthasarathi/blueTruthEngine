@@ -90,6 +90,16 @@ SceneDescription loadSceneDescription(const std::string& path)
         std::exit(EXIT_FAILURE);
     }
 
+    {
+        std::string mode = extractAttribute(xml, "scene", "style");
+        if (!mode.empty()) desc.styleMode = mode;
+        if (desc.styleMode != "physical" && desc.styleMode != "anime") {
+            std::cerr << "[scene] <scene style=\"" << desc.styleMode
+                      << "\"> is not \"physical\" or \"anime\" — using physical.\n";
+            desc.styleMode = "physical";
+        }
+    }
+
     // --- BSDFs --------------------------------------------------------------
     {
         size_t searchFrom = 0;
@@ -163,6 +173,123 @@ SceneDescription loadSceneDescription(const std::string& path)
         }
     }
 
+    // --- Styles -------------------------------------------------------------
+    //  A <style> is independent of BSDF type; a material points at one by name.
+    {
+        size_t searchFrom = 0;
+        while (true) {
+            std::string tagContent;
+            if (!extractNextTag(xml, "style", searchFrom, tagContent))
+                break;
+
+            StyleDesc s;
+            s.name        = extractAttributeFromTag(tagContent, "name");
+            s.diffuseRamp = extractAttributeFromTag(tagContent, "diffuse_ramp");
+
+            if (s.name.empty()) {
+                std::cerr << "[scene] <style> missing required attribute `name`.\n";
+                std::exit(EXIT_FAILURE);
+            }
+
+            auto readFOpt = [&](const char* attrName, float& out) {
+                std::string v = extractAttributeFromTag(tagContent, attrName);
+                if (v.empty()) return;
+                try { out = std::stof(v); } catch (...) {
+                    std::cerr << "[scene] <style name=\"" << s.name
+                              << "\"> invalid float attribute `" << attrName
+                              << "`: \"" << v << "\"\n";
+                    std::exit(EXIT_FAILURE);
+                }
+            };
+            auto readIOpt = [&](const char* attrName, int& out) {
+                std::string v = extractAttributeFromTag(tagContent, attrName);
+                if (v.empty()) return;
+                try { out = std::stoi(v); } catch (...) {
+                    std::cerr << "[scene] <style name=\"" << s.name
+                              << "\"> invalid int attribute `" << attrName
+                              << "`: \"" << v << "\"\n";
+                    std::exit(EXIT_FAILURE);
+                }
+            };
+
+            readIOpt("diffuse_bands",  s.diffuseBands);
+            readFOpt("band_softness",  s.bandSoftness);
+            readFOpt("tone_scale",     s.toneScale);
+
+            readFOpt("spec_threshold", s.specThreshold);
+            readFOpt("spec_softness",  s.specSoftness);
+            readFOpt("spec_intensity", s.specIntensity);
+
+            readFOpt("rim_strength", s.rimStrength);
+            readFOpt("rim_power",    s.rimPower);
+            readFOpt("rim_colorR",   s.rimColorR);
+            readFOpt("rim_colorG",   s.rimColorG);
+            readFOpt("rim_colorB",   s.rimColorB);
+
+            readIOpt("reflect_bands",    s.reflectBands);
+            readFOpt("reflect_gain",     s.reflectGain);
+            readFOpt("reflect_tint_mix", s.reflectTintMix);
+            readFOpt("reflect_tintR",    s.reflectTintR);
+            readFOpt("reflect_tintG",    s.reflectTintG);
+            readFOpt("reflect_tintB",    s.reflectTintB);
+
+            readIOpt("transmit_bands", s.transmitBands);
+            readFOpt("transmit_gain",  s.transmitGain);
+            readFOpt("chroma_shift",   s.chromaShift);
+
+            readFOpt("indirect_gain", s.indirectGain);
+
+            readFOpt("line_colorR",   s.lineColorR);
+            readFOpt("line_colorG",   s.lineColorG);
+            readFOpt("line_colorB",   s.lineColorB);
+            readFOpt("line_width",    s.lineWidth);
+            readFOpt("line_strength", s.lineStrength);
+            readFOpt("outline_normal_threshold", s.outlineNormalThreshold);
+            readFOpt("outline_depth_threshold",  s.outlineDepthThreshold);
+
+            desc.styles.push_back(s);
+        }
+    }
+
+    // --- Environment light --------------------------------------------------
+    {
+        size_t searchFrom = 0;
+        std::string tagContent;
+        if (extractNextTag(xml, "environment", searchFrom, tagContent)) {
+            EnvironmentDesc& e = desc.environment;
+            e.filename       = extractAttributeFromTag(tagContent, "filename");
+            e.backgroundFile = extractAttributeFromTag(tagContent, "background_file");
+
+            std::string mode = extractAttributeFromTag(tagContent, "background");
+            if (!mode.empty()) e.backgroundMode = mode;
+
+            auto readFOpt = [&](const char* attrName, float& out) {
+                std::string v = extractAttributeFromTag(tagContent, attrName);
+                if (v.empty()) return;
+                try { out = std::stof(v); } catch (...) {
+                    std::cerr << "[scene] <environment> invalid float attribute `"
+                              << attrName << "`: \"" << v << "\"\n";
+                    std::exit(EXIT_FAILURE);
+                }
+            };
+            readFOpt("intensity",  e.intensity);
+            readFOpt("yaw",        e.yawDegrees);
+            readFOpt("backgroundR", e.backgroundR);
+            readFOpt("backgroundG", e.backgroundG);
+            readFOpt("backgroundB", e.backgroundB);
+
+            // A flat-colour backdrop is a legitimate environment with no HDRI at
+            // all, so `enabled` does not require a filename.
+            e.enabled = !e.filename.empty() || e.backgroundMode == "color";
+
+            if (e.filename.empty() && e.backgroundMode != "color") {
+                std::cerr << "[scene] <environment> has no `filename` and "
+                             "background is not \"color\" — ignoring.\n";
+                e.enabled = false;
+            }
+        }
+    }
+
     // --- Materials ----------------------------------------------------------
     {
         size_t searchFrom = 0;
@@ -175,6 +302,7 @@ SceneDescription loadSceneDescription(const std::string& path)
             mat.name          = extractAttributeFromTag(tagContent, "name");
             mat.albedoTexture = extractAttributeFromTag(tagContent, "albedoTexture");
             mat.bsdfName      = extractAttributeFromTag(tagContent, "bsdf");
+            mat.styleName     = extractAttributeFromTag(tagContent, "style");
 
             if (mat.name.empty()) {
                 std::cerr << "[scene] <material> missing required attribute "
@@ -312,6 +440,25 @@ SceneDescription loadSceneDescription(const std::string& path)
         }
     }
 
+    // Validate material -> style references (style is optional)
+    {
+        auto styleExists = [&](const std::string& name) -> bool {
+            for (const auto& s : desc.styles) {
+                if (s.name == name) return true;
+            }
+            return false;
+        };
+
+        for (const auto& mat : desc.materials) {
+            if (!mat.styleName.empty() && !styleExists(mat.styleName)) {
+                std::cerr << "[scene] material style reference \""
+                          << mat.styleName
+                          << "\" not found in <style> entries.\n";
+                std::exit(EXIT_FAILURE);
+            }
+        }
+    }
+
     // --- Emitters -----------------------------------------------------------
     {
         size_t searchFrom = 0;
@@ -441,7 +588,14 @@ SceneDescription loadSceneDescription(const std::string& path)
     std::cout << "[scene] Loaded scene from \"" << path << "\"\n";
     std::cout << "        meshes    = " << desc.meshes.size()    << "\n";
     std::cout << "        materials = " << desc.materials.size() << "\n";
+    std::cout << "        styles    = " << desc.styles.size()    << "\n";
+    std::cout << "        styleMode = " << desc.styleMode        << "\n";
     std::cout << "        emitters  = " << desc.emitters.size()  << "\n";
+    if (desc.environment.enabled) {
+        std::cout << "        environment = \"" << desc.environment.filename
+                  << "\" (intensity " << desc.environment.intensity
+                  << ", background " << desc.environment.backgroundMode << ")\n";
+    }
     std::cout << "        window    = " << desc.windowWidth << " x "
               << desc.windowHeight << "\n";
 

@@ -22,6 +22,8 @@ extern "C" const char* getWfExtendPtx();
 extern "C" size_t      getWfExtendPtxSize();
 extern "C" const char* getWfShadowPtx();
 extern "C" size_t      getWfShadowPtxSize();
+extern "C" const char* getWfOutlinePtx();
+extern "C" size_t      getWfOutlinePtxSize();
 
 // ---------------------------------------------------------------------------
 //  OptiX setup helpers
@@ -76,6 +78,10 @@ void ensureOptixPipeline()
     OPTIX_CHECK(optixModuleCreate(s_optixContext, &moduleOptions, &pipelineCompileOptions,
                                   getWfShadowPtx(), getWfShadowPtxSize(),
                                   log, &logSize, &s_optixModuleWfShadow));
+    logSize = sizeof(log);
+    OPTIX_CHECK(optixModuleCreate(s_optixContext, &moduleOptions, &pipelineCompileOptions,
+                                  getWfOutlinePtx(), getWfOutlinePtxSize(),
+                                  log, &logSize, &s_optixModuleWfOutline));
 
     // ── Program groups ──────────────────────────────────────────────
     OptixProgramGroupOptions pgOptions = {};
@@ -123,10 +129,21 @@ void ensureOptixPipeline()
     logSize = sizeof(log);
     OPTIX_CHECK(optixProgramGroupCreate(s_optixContext, &wfShadowDesc, 1, &pgOptions, log, &logSize, &s_pgWfShadow));
 
+    // The outline probe raygen is always built, even though it is only launched
+    // in anime mode — the cost of a linked-but-unlaunched program group is a
+    // little pipeline setup time, and building it lazily would mean rebuilding
+    // the pipeline on a style-mode toggle.
+    OptixProgramGroupDesc wfOutlineDesc = {};
+    wfOutlineDesc.kind                     = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
+    wfOutlineDesc.raygen.module            = s_optixModuleWfOutline;
+    wfOutlineDesc.raygen.entryFunctionName = "__raygen__wf_outline";
+    logSize = sizeof(log);
+    OPTIX_CHECK(optixProgramGroupCreate(s_optixContext, &wfOutlineDesc, 1, &pgOptions, log, &logSize, &s_pgWfOutline));
+
     // ── Pipeline ────────────────────────────────────────────────────
     // All raygen programs must be in the pipeline even if not all are used
     // in every frame — OptiX validates all referenced entry functions at link time.
-    OptixProgramGroup groups[] = { s_pgRaygen, s_pgWfExtend, s_pgWfShadow,
+    OptixProgramGroup groups[] = { s_pgRaygen, s_pgWfExtend, s_pgWfShadow, s_pgWfOutline,
                                     s_pgMissRadiance, s_pgMissShadow, s_pgHitRadiance };
 
     OptixPipelineLinkOptions linkOptions = {};
@@ -196,12 +213,21 @@ void ensureOptixPipeline()
     CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(s_d_raygen_wf_shadow), &wfShadowRgRecord,
                           sizeof(RayGenSbtRecord), cudaMemcpyHostToDevice));
 
+    RayGenSbtRecord wfOutlineRgRecord;
+    OPTIX_CHECK(optixSbtRecordPackHeader(s_pgWfOutline, &wfOutlineRgRecord));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_d_raygen_wf_outline), sizeof(RayGenSbtRecord)));
+    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(s_d_raygen_wf_outline), &wfOutlineRgRecord,
+                          sizeof(RayGenSbtRecord), cudaMemcpyHostToDevice));
+
     // Copy the megakernel SBT layout then swap only the raygen record.
     s_sbt_wf_extend = s_sbt;
     s_sbt_wf_extend.raygenRecord = s_d_raygen_wf_extend;
 
     s_sbt_wf_shadow = s_sbt;
     s_sbt_wf_shadow.raygenRecord = s_d_raygen_wf_shadow;
+
+    s_sbt_wf_outline = s_sbt;
+    s_sbt_wf_outline.raygenRecord = s_d_raygen_wf_outline;
 
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_launchParams_d), sizeof(LaunchParams)));
 
@@ -317,8 +343,10 @@ void freeOptixState()
     // ── Wavefront SBT records and program groups ────────────────────
     if (s_d_raygen_wf_extend) { cudaFree(reinterpret_cast<void*>(s_d_raygen_wf_extend)); s_d_raygen_wf_extend = 0; }
     if (s_d_raygen_wf_shadow) { cudaFree(reinterpret_cast<void*>(s_d_raygen_wf_shadow)); s_d_raygen_wf_shadow = 0; }
+    if (s_d_raygen_wf_outline){ cudaFree(reinterpret_cast<void*>(s_d_raygen_wf_outline)); s_d_raygen_wf_outline = 0; }
     if (s_pgWfExtend)  { optixProgramGroupDestroy(s_pgWfExtend); s_pgWfExtend = nullptr; }
     if (s_pgWfShadow)  { optixProgramGroupDestroy(s_pgWfShadow); s_pgWfShadow = nullptr; }
+    if (s_pgWfOutline) { optixProgramGroupDestroy(s_pgWfOutline); s_pgWfOutline = nullptr; }
 
     if (s_optixPipeline)  { optixPipelineDestroy(s_optixPipeline);   s_optixPipeline = nullptr; }
     if (s_pgRaygen)       { optixProgramGroupDestroy(s_pgRaygen);    s_pgRaygen = nullptr; }
@@ -327,6 +355,7 @@ void freeOptixState()
     if (s_pgHitRadiance)  { optixProgramGroupDestroy(s_pgHitRadiance);  s_pgHitRadiance = nullptr; }
     if (s_optixModuleWfExtend) { optixModuleDestroy(s_optixModuleWfExtend); s_optixModuleWfExtend = nullptr; }
     if (s_optixModuleWfShadow) { optixModuleDestroy(s_optixModuleWfShadow); s_optixModuleWfShadow = nullptr; }
+    if (s_optixModuleWfOutline) { optixModuleDestroy(s_optixModuleWfOutline); s_optixModuleWfOutline = nullptr; }
     if (s_optixModule)    { optixModuleDestroy(s_optixModule);       s_optixModule = nullptr; }
     if (s_optixContext)   { optixDeviceContextDestroy(s_optixContext); s_optixContext = nullptr; }
     s_optixReady = false;

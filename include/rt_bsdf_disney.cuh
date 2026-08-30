@@ -754,8 +754,26 @@ __device__ __forceinline__ Float3 sampleSheenLobe(const BsdfData& bsdf, BsdfQuer
 
 // ############DISNEY TOP-LEVEL###################################################
 
-/// Evaluate the BRDF for the given pair of directions
-__device__ __forceinline__ Float3 bsdfEvalDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec) {
+/// Evaluate the BRDF, keeping the diffuse-ish and specular-ish halves apart.
+///
+/// This is the same arithmetic bsdfEvalDisney has always done — the five lobe
+/// terms were already computed separately before being summed.  Splitting the
+/// sum is what lets next-event estimation at the primary hit feed the cel body
+/// tone and the hard anime highlight as two independently converged channels,
+/// without a single change to the transport.
+///
+///   diffuse-ish  = fd + fs                (base diffuse + sheen)
+///   specular-ish = fm + fc + fg           (metal + clearcoat + glass)
+///
+/// bsdfEvalDisney is implemented in terms of this function so the split can
+/// never drift away from the total.
+__device__ __forceinline__ void bsdfEvalDisneySplit(const BsdfData& bsdf,
+                                                     const BsdfQueryRecord& bRec,
+                                                     Float3& outDiffuseish,
+                                                     Float3& outSpecularish) {
+
+    outDiffuseish  = {0.0f, 0.0f, 0.0f};
+    outSpecularish = {0.0f, 0.0f, 0.0f};
 
     // if the ray is inside of object then only do glass
 
@@ -764,9 +782,10 @@ __device__ __forceinline__ Float3 bsdfEvalDisney(const BsdfData& bsdf, const Bsd
     if (cosThetaIn <= 0.0f) {
 
         // Only glass
-        if (disneySpecularTransmission(bsdf) <= 0.0f) return {0.0f, 0.0f, 0.0f};
+        if (disneySpecularTransmission(bsdf) <= 0.0f) return;
 
-        return evalGlassLobe(bsdf, bRec);
+        outSpecularish = evalGlassLobe(bsdf, bRec);
+        return;
 
     }
     else {
@@ -780,9 +799,19 @@ __device__ __forceinline__ Float3 bsdfEvalDisney(const BsdfData& bsdf, const Bsd
         Float3 fc = mul3(evalClearcoatLobe(bsdf, bRec), 0.25f * disneyClearcoat(bsdf));
         Float3 fg = mul3(evalGlassLobe(bsdf, bRec), minMetal * disneySpecularTransmission(bsdf));
 
-        return add3(add3(add3(add3(fd, fm), fg), fc), fs);
+        outDiffuseish  = add3(fd, fs);
+        outSpecularish = add3(add3(fm, fc), fg);
 
     }
+
+}
+
+/// Evaluate the BRDF for the given pair of directions
+__device__ __forceinline__ Float3 bsdfEvalDisney(const BsdfData& bsdf, const BsdfQueryRecord& bRec) {
+
+    Float3 diffuseish, specularish;
+    bsdfEvalDisneySplit(bsdf, bRec, diffuseish, specularish);
+    return add3(diffuseish, specularish);
 
 }
 
@@ -819,8 +848,13 @@ __device__ __forceinline__ float bsdfPdfDisney(const BsdfData& bsdf, const BsdfQ
     }
 }
 
-/// Sample the BRDF
-__device__ __forceinline__ Float3 bsdfSampleDisney(const BsdfData& bsdf, BsdfQueryRecord& bRec, float u1, float u2, float* outPdf = nullptr) {
+/// Sample the BRDF.
+///
+/// `outLobe` optionally reports which DisneyLobe was chosen.  The path tracer
+/// uses it at the primary hit to decide which radiance channel the rest of the
+/// path feeds, which is how a metal surface's reflections end up posterized as
+/// anime metal and a gem's refractions as an anime jewel.
+__device__ __forceinline__ Float3 bsdfSampleDisney(const BsdfData& bsdf, BsdfQueryRecord& bRec, float u1, float u2, float* outPdf = nullptr, int* outLobe = nullptr) {
 
     // Pick a random lobe to sample out of the 5
 
@@ -832,9 +866,11 @@ __device__ __forceinline__ Float3 bsdfSampleDisney(const BsdfData& bsdf, BsdfQue
 
         if (disneySpecularTransmission(bsdf) <= 0.0f) {
             if (outPdf) *outPdf = 0.0f;
+            if (outLobe) *outLobe = DISNEY_LOBE_GLASS;
             return {0.0f, 0.0f, 0.0f};
         }
 
+        if (outLobe) *outLobe = DISNEY_LOBE_GLASS;
         sampleGlassLobe(bsdf, bRec, u1, u2);
 
     }
@@ -857,22 +893,26 @@ __device__ __forceinline__ Float3 bsdfSampleDisney(const BsdfData& bsdf, BsdfQue
 
         if (rndChoice < diffuseFrac) {
 
+            if (outLobe) *outLobe = DISNEY_LOBE_DIFFUSE;
             sampleDiffuseLobe(bsdf, bRec, u1, u2);
 
         }
         else if (rndChoice < diffuseFrac + specularFrac) {
 
+            if (outLobe) *outLobe = DISNEY_LOBE_GLASS;
             bRec.rndExtra = (specularFrac > 0.0f) ? (rndChoice - diffuseFrac) / specularFrac : 0.0f;
             sampleGlassLobe(bsdf, bRec, u1, u2);
 
         }
         else if (rndChoice < diffuseFrac + specularFrac + metallicFrac) {
 
+            if (outLobe) *outLobe = DISNEY_LOBE_METAL;
             sampleMetalLobe(bsdf, bRec, u1, u2);
 
         }
         else {
 
+            if (outLobe) *outLobe = DISNEY_LOBE_CLEARCOAT;
             sampleClearcoatLobe(bsdf, bRec, u1, u2);
 
         }

@@ -1,0 +1,151 @@
+<scene style="anime">
+    <!-- ====================================================================
+         Transport-aware anime NPR demo.
+
+         Press N to A/B this against the photorealistic render of the SAME
+         converged data — stylization happens at present time, so the toggle is
+         instant and costs no re-convergence.  Press V to cycle the debug views
+         (albedo, normal, object ID, depth, edge, then the six radiance
+         channels) and see how the split is routed.
+
+         What to look for, in rough order of "raster cannot do this":
+
+           • The chrome sphere shows POSTERIZED REFLECTIONS of the room.  The
+             bands sit on a real traced reflection, so the bunny and the walls
+             appear inside it, correctly banded, with the outline drawn from the
+             mirror's point of view rather than smeared from the camera's.
+           • The gem shows posterized REFRACTION with a saturation push, so
+             caustics land on the floor as flat colour shapes.
+           • The bunny's shadow terminator is a hard anime edge whose SHAPE is
+             physically exact, including where the wall bounce fills it in.
+             That is a converged penumbra quantized once, not a quantized N·L.
+         ==================================================================== -->
+
+    <!-- ── Styles ─────────────────────────────────────────────────────────
+         Independent of BSDF type: any style can attach to any material.  A
+         metallic anime material is just Disney with metallic=1 plus a metal
+         style; a jewel is Disney with specular_transmission=1 plus a gem style.
+         ------------------------------------------------------------------- -->
+
+    <!-- Body tone driven by an artist-authored ramp.  The ramp pushes the
+         shadow band toward blue-violet instead of merely darkening it, which is
+         the single biggest thing that reads as anime rather than posterized 3D. -->
+    <style name="skinStyle"
+           diffuse_ramp="assets/ramp_skin.png"
+           diffuse_bands="3" band_softness="0.04" tone_scale="1.6"
+           spec_threshold="0.35" spec_softness="0.02" spec_intensity="1.4"
+           rim_strength="0.5" rim_power="3.5"
+           rim_colorR="0.55" rim_colorG="0.70" rim_colorB="1.00"
+           indirect_gain="0.7"
+           line_colorR="0.05" line_colorG="0.03" line_colorB="0.08"
+           line_width="0.004" line_strength="0.9"
+           outline_normal_threshold="0.35" outline_depth_threshold="0.06" />
+
+    <style name="clothStyle"
+           diffuse_ramp="assets/ramp_cloth.png"
+           diffuse_bands="2" band_softness="0.02" tone_scale="1.8"
+           spec_threshold="0.8" spec_softness="0.05" spec_intensity="0.4"
+           indirect_gain="0.6"
+           line_colorR="0.02" line_colorG="0.02" line_colorB="0.06"
+           line_width="0.004" line_strength="1.0"
+           outline_normal_threshold="0.4" outline_depth_threshold="0.06" />
+
+    <!-- Anime metal: posterize the reflection into a few flat steps and pull it
+         toward a cool tint.  reflect_bands is the whole trick. -->
+    <style name="metalStyle"
+           diffuse_bands="2" band_softness="0.02"
+           spec_threshold="0.3" spec_softness="0.02" spec_intensity="1.6"
+           reflect_bands="4" reflect_gain="1.1" reflect_tint_mix="0.35"
+           reflect_tintR="0.72" reflect_tintG="0.84" reflect_tintB="1.00"
+           indirect_gain="0.8"
+           line_colorR="0.02" line_colorG="0.04" line_colorB="0.08"
+           line_width="0.005" line_strength="1.0"
+           outline_normal_threshold="0.3" outline_depth_threshold="0.05" />
+
+    <!-- Anime jewel: fewer, harder bands through the refraction plus a chroma
+         push, so the gem reads as coloured glass with facet steps. -->
+    <style name="gemStyle"
+           transmit_bands="5" transmit_gain="1.2" chroma_shift="0.8"
+           band_softness="0.015"
+           reflect_bands="3" reflect_gain="1.0"
+           spec_threshold="0.25" spec_softness="0.02" spec_intensity="2.0"
+           indirect_gain="1.0"
+           line_colorR="0.10" line_colorG="0.02" line_colorB="0.14"
+           line_width="0.004" line_strength="0.7"
+           outline_normal_threshold="0.25" outline_depth_threshold="0.05" />
+
+    <!-- Flat backdrop over physical lighting is standard anime art direction.
+         Point `filename` at an equirectangular .hdr to light the scene from it
+         instead; the environment then joins the emitter selection CDF and is
+         importance-sampled with full MIS, in both renderers and both style
+         modes. -->
+    <environment background="color"
+                 backgroundR="0.06" backgroundG="0.07" backgroundB="0.12"
+                 intensity="1.0" yaw="0.0" />
+
+    <!-- ── BSDFs ─────────────────────────────────────────────────────────── -->
+    <bsdf name="floorDiffuse" type="diffuse" albedoR="0.72" albedoG="0.72" albedoB="0.76" />
+    <bsdf name="wallDiffuse"  type="diffuse" albedoR="0.62" albedoG="0.66" albedoB="0.78" />
+    <bsdf name="leftDiffuse"  type="diffuse" albedoR="0.85" albedoG="0.42" albedoB="0.38" />
+    <bsdf name="rightDiffuse" type="diffuse" albedoR="0.38" albedoG="0.72" albedoB="0.52" />
+    <bsdf name="lightDiffuse" type="diffuse" albedoR="1.00" albedoG="1.00" albedoB="1.00" />
+
+    <!-- Cel body: plain diffuse.  The banding is applied to the converged
+         direct-diffuse channel, so no special BSDF is needed. -->
+    <bsdf name="bunnyBody" type="diffuse" albedoR="0.90" albedoG="0.72" albedoB="0.66" />
+
+    <!-- Metallic anime: the existing Disney BSDF, metallic=1.  The style rides
+         on top of physically correct metal transport. -->
+    <bsdf name="chrome" type="disney"
+          base_colorR="0.95" base_colorG="0.96" base_colorB="1.00"
+          roughness="0.06" metallic="1.0" specular="0.9"
+          clearcoat="0.25" clearcoat_gloss="0.9" eta="1.5" />
+
+    <!-- Jewel anime: Disney with full specular transmission. -->
+    <bsdf name="gem" type="disney"
+          base_colorR="0.35" base_colorG="0.85" base_colorB="0.72"
+          roughness="0.03" metallic="0.0" specular="1.0"
+          specular_transmission="1.0" specular_tint="0.4"
+          eta="1.62" />
+
+    <!-- ── Materials (style attaches here) ───────────────────────────────── -->
+    <material name="floorM"  bsdf="floorDiffuse" style="clothStyle" />
+    <material name="wallM"   bsdf="wallDiffuse"  style="clothStyle" />
+    <material name="leftM"   bsdf="leftDiffuse"  style="clothStyle" />
+    <material name="rightM"  bsdf="rightDiffuse" style="clothStyle" />
+    <material name="lightM"  bsdf="lightDiffuse" />
+    <material name="bunnyM"  bsdf="bunnyBody"    style="skinStyle" />
+    <material name="chromeM" bsdf="chrome"       style="metalStyle" />
+    <material name="gemM"    bsdf="gem"          style="gemStyle" />
+
+    <!-- ── Geometry ──────────────────────────────────────────────────────── -->
+    <mesh filename="assets/floor.obj"     material="floorM" />
+    <mesh filename="assets/walls.obj"     material="wallM" />
+    <mesh filename="assets/leftwall.obj"  material="leftM" />
+    <mesh filename="assets/rightwall.obj" material="rightM" />
+    <mesh filename="assets/light.obj"     material="lightM"
+          isEmitter="true" radianceR="20" radianceG="19" radianceB="17" />
+
+    <!-- The cel-shaded subject: a hard shadow terminator whose shape comes out
+         of real multi-bounce transport, including the coloured wall bounce.
+         Transform matches the other bunny scenes in assets/. -->
+    <mesh filename="assets/bunny.obj" material="bunnyM"
+          scaleX="4" scaleY="4" scaleZ="4" rotY="15"
+          posX="0.00" posY="-0.15" posZ="0.20" />
+
+    <!-- Posterized reflections: look for the bunny and both coloured walls
+         showing up inside this sphere, banded, with their own outlines. -->
+    <mesh filename="assets/sphere1.obj" material="chromeM"
+          posX="-0.15" posY="0.00" posZ="-0.50" />
+
+    <!-- Posterized refraction + chroma push. -->
+    <mesh filename="assets/sphere2.obj" material="gemM"
+          posX="0.20" posY="0.00" posZ="-0.80" />
+
+    <!-- Same framing as assets/scene.xml, which is known to frame this
+         Cornell box correctly. -->
+    <camera eyeX="0.0" eyeY="0.8" eyeZ="2.7"
+            lookAtX="0.0" lookAtY="0.8" lookAtZ="-0.2"
+            upX="0" upY="1" upZ="0" fovY="40" />
+    <window width="1280" height="720" />
+</scene>

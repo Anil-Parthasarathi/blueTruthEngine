@@ -29,6 +29,7 @@
 #include "rt_rng.cuh"
 #include "rt_bsdf.cuh"
 #include "rt_emitter_sampling.cuh"
+#include "rt_environment.cuh"
 #include "rt_constants.cuh"
 #include "rt_shading_context.cuh"
 
@@ -77,9 +78,14 @@ __device__ __forceinline__ void accumulateEmitterHit(
             its.triangleIndex, es.emitters, es.emitterCount, es.emitterTriIndices);
 
         if (emitterIdx >= 0) {
+            // Note the selection probability uses emitterSelectCount, not
+            // emitterCount: when an environment light is present it occupies an
+            // extra slot in the same CDF, which lowers every mesh emitter's
+            // chance of being picked.  Using the wrong count here would
+            // overestimate the light pdf and darken emitters.
             const float lightPDFAreaBRDF =
                 emitterProbabilityEvaluatorFromMesh(es.emitters[emitterIdx]) *
-                sceneGetEmitterPDF(emitterIdx, es.sceneEmitterCdf, es.emitterCount);
+                sceneGetEmitterPDF(emitterIdx, es.sceneEmitterCdf, emitterSelectCount(es));
 
             const float lightPDFSolidAngleBRDF =
                 convertAreaPDFtoSolidAnglePDF(lightPDFAreaBRDF, directEmitterQuery);
@@ -98,28 +104,131 @@ __device__ __forceinline__ void accumulateEmitterHit(
 }
 
 // ---------------------------------------------------------------------------
-//  Samples one randomly chosen area (mesh) emitter using MIS and fills
-//  `shadowRay` with the visibility test plus the throughput-multiplied
-//  contribution to add if the ray is unoccluded.
-//  Returns false when the sample carries no energy (the original early-outs).
+//  Accumulates the environment light along a ray that escaped the scene.
+//
+//  Mirrors accumulateEmitterHit's balance-heuristic weighting, but with
+//  envPdf(dir) times the environment's selection probability standing in for the
+//  mesh emitter's solid-angle pdf.  Keeping this in a shared header means the
+//  megakernel and the wavefront pipeline weight escaped rays identically, so the
+//  megakernel stays usable as the reference for environment MIS.
+//
+//  Camera rays (bounceCount == 0) read the BACKDROP instead of the lighting
+//  environment.  A flat or painted backdrop over a physically sensible lighting
+//  environment is the normal anime art direction, and separating the two costs
+//  nothing.  Camera rays have specularBounce = true, so they take the full
+//  contribution with no MIS weight, which is correct: no NEE strategy could
+//  have generated them.
 // ---------------------------------------------------------------------------
-__device__ __forceinline__ bool prepareAreaEmitterNEE(
+__device__ __forceinline__ void accumulateEnvMiss(
     PathState& pathRecord,
-    RngState& rng,
+    const DirectLightingContext& lightingCtx)
+{
+    const EnvLightData& env = lightingCtx.env;
+    if (!env.enabled) return;
+
+    const Float3 dir = pathRecord.ray.direction;
+
+    if (pathRecord.bounceCount == 0) {
+        const Float3 bg = envEvalBackground(env, dir);
+        pathRecord.accumulatedColor =
+            add3(pathRecord.accumulatedColor, mul3(bg, pathRecord.throughput));
+        return;
+    }
+
+    const Float3 radiance = envEval(env, dir);
+
+    float brdfWeight = 1.0f;
+
+    const EmitterSamplingData& es = lightingCtx.emitterSampling;
+    if (!pathRecord.specularBounce && es.envSlot >= 0) {
+        const float selectPdf =
+            sceneGetEmitterPDF(es.envSlot, es.sceneEmitterCdf, emitterSelectCount(es));
+        const float lightPdf = envPdf(env, dir) * selectPdf;
+        const float denom    = pathRecord.brdfPDF + lightPdf;
+
+        if (denom <= 0.0f) brdfWeight = 0.0f;
+        else               brdfWeight = pathRecord.brdfPDF / denom;
+    }
+
+    pathRecord.accumulatedColor = add3(
+        pathRecord.accumulatedColor,
+        mul3(mul3(radiance, pathRecord.throughput), brdfWeight));
+}
+
+// ---------------------------------------------------------------------------
+//  Environment NEE for an ALREADY-SELECTED environment slot.
+//
+//  Works directly in solid angle (there is no emitter surface to convert from),
+//  but follows the same contribution convention as the mesh path so the two
+//  agree on any given surface:
+//      contribution = fr * Le * |cos(n, wi)| * misWeight / pdf
+//  with pdf including the discrete selection probability.
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ bool prepareEnvNEE(
+    PathState& pathRecord,
     const Intersection& its,
     const BsdfData& bsdf,
     const DirectLightingContext& lightingCtx,
+    float selectPdf,
+    float u0, float u1,
+    ShadowRayRecord& shadowRay)
+{
+    const EnvLightData& env = lightingCtx.env;
+    if (!env.enabled || selectPdf <= 0.0f) return false;
+
+    const EnvSample sample = envSample(env, u0, u1);
+    if (sample.pdf <= 0.0f) return false;
+    if (sample.radiance.x <= 0.0f && sample.radiance.y <= 0.0f && sample.radiance.z <= 0.0f)
+        return false;
+
+    BsdfQueryRecord bsdfQueryEnv{};
+    bsdfQueryEnv.wi      = toLocalFromNormal(its.hitNormal, mul3(pathRecord.ray.direction, -1.0f));
+    bsdfQueryEnv.wo      = toLocalFromNormal(its.hitNormal, sample.direction);
+    bsdfQueryEnv.measure = BSDF_ESolidAngle;
+
+    Float3 frDiffuse, frSpecular;
+    bsdfEvalSplit(bsdf, bsdfQueryEnv, frDiffuse, frSpecular);
+
+    const float lightPdf = sample.pdf * selectPdf;
+    const float brdfPdfEnv = bsdfPdf(bsdf, bsdfQueryEnv);
+    const float denom      = brdfPdfEnv + lightPdf;
+    if (denom <= 0.0f) return false;
+
+    const float lightWeight = lightPdf / denom;
+    const float cosSurface  = fabsf(dot3(its.hitNormal, sample.direction));
+
+    // Everything except the BSDF, so the two halves share the work.
+    Float3 common = mul3(sample.radiance, lightWeight * cosSurface);
+    common = div3(common, lightPdf);
+    common = mul3(common, pathRecord.throughput);
+
+    shadowRay.origin           = its.hitPoint;
+    shadowRay.direction        = sample.direction;
+    shadowRay.tMax             = RT_ENV_TMAX;
+    shadowRay.contribution     = mul3(frDiffuse,  common);
+    shadowRay.contributionSpec = mul3(frSpecular, common);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  Mesh-emitter NEE for an ALREADY-SELECTED emitter slot.
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ bool prepareMeshEmitterNEE(
+    PathState& pathRecord,
+    const Intersection& its,
+    const BsdfData& bsdf,
+    const DirectLightingContext& lightingCtx,
+    int emitterIndex,
+    float selectPdf,
+    float u0, float u1,
     ShadowRayRecord& shadowRay)
 {
     const EmitterSamplingData& es = lightingCtx.emitterSampling;
 
-    const float uLight0 = rngNextFloat01(rng);
-    const float uLight1 = rngNextFloat01(rng);
-
     EmitterQueryRecord emitterQuery{};
     emitterQuery.originPoint = its.hitPoint;
 
-    Float3 le = sampleGenerator(es, emitterQuery, uLight0, uLight1);
+    Float3 le = sampleGeneratorForEmitter(es, emitterIndex, selectPdf, emitterQuery, u0, u1);
 
     if ((le.x <= 0.0f && le.y <= 0.0f && le.z <= 0.0f) ||
         emitterQuery.emitterPdf <= 0.0f ||
@@ -139,7 +248,11 @@ __device__ __forceinline__ bool prepareAreaEmitterNEE(
     bsdfQueryDirect.wo      = toLocalFromNormal(its.hitNormal, emitterQuery.directionToLight);
     bsdfQueryDirect.measure = BSDF_ESolidAngle;
 
-    const Float3 fr = bsdfEval(bsdf, bsdfQueryDirect);
+    // Split rather than summed, so direct lighting at the primary hit can feed
+    // the cel body tone and the anime highlight as separate converged channels.
+    // The two halves add up to exactly what bsdfEval would have returned.
+    Float3 frDiffuse, frSpecular;
+    bsdfEvalSplit(bsdf, bsdfQueryDirect, frDiffuse, frSpecular);
 
     const float lightPDFareaDirect       = emitterQuery.emitterPdf * emitterQuery.pdf;
     const float lightPDFSolidAngleDirect = convertAreaPDFtoSolidAnglePDF(lightPDFareaDirect, emitterQuery);
@@ -150,16 +263,55 @@ __device__ __forceinline__ bool prepareAreaEmitterNEE(
 
     const float lightWeight = lightPDFSolidAngleDirect / weightDenomSumDirect;
 
-    Float3 contrib = mul3(fr, le);
-    contrib = mul3(contrib, lightWeight);
-    contrib = mul3(contrib, geo);
-    contrib = div3(contrib, lightPDFareaDirect);
+    Float3 common = mul3(le, lightWeight);
+    common = mul3(common, geo);
+    common = div3(common, lightPDFareaDirect);
+    common = mul3(common, pathRecord.throughput);
 
-    shadowRay.origin       = its.hitPoint;
-    shadowRay.direction    = emitterQuery.directionToLight;
-    shadowRay.tMax         = distToLight - RT_EPSILON;
-    shadowRay.contribution = mul3(contrib, pathRecord.throughput);
+    shadowRay.origin           = its.hitPoint;
+    shadowRay.direction        = emitterQuery.directionToLight;
+    shadowRay.tMax             = distToLight - RT_EPSILON;
+    shadowRay.contribution     = mul3(frDiffuse,  common);
+    shadowRay.contributionSpec = mul3(frSpecular, common);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+//  Samples ONE randomly chosen emitter using MIS and fills `shadowRay` with the
+//  visibility test plus the throughput-multiplied contribution to add if the ray
+//  is unoccluded.  Returns false when the sample carries no energy.
+//
+//  The environment light participates as a virtual slot in the same selection
+//  CDF as the mesh emitters, so this one call covers every light in the scene
+//  and there is no separate environment NEE strategy to keep in sync.
+//
+//  Only two RNG draws are used, unchanged from before the environment existed:
+//  sampleCdfReuse remaps the uniform to its position within the chosen bin, and
+//  the chosen light reuses it for its own internal sampling.
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ bool prepareAreaEmitterNEE(
+    PathState& pathRecord,
+    RngState& rng,
+    const Intersection& its,
+    const BsdfData& bsdf,
+    const DirectLightingContext& lightingCtx,
+    ShadowRayRecord& shadowRay)
+{
+    const EmitterSamplingData& es = lightingCtx.emitterSampling;
+
+    float uLight0 = rngNextFloat01(rng);
+    float uLight1 = rngNextFloat01(rng);
+
+    const EmitterSelection sel = selectSceneEmitter(es, uLight0);
+    if (sel.slot < 0) return false;
+
+    if (sel.isEnv) {
+        return prepareEnvNEE(pathRecord, its, bsdf, lightingCtx,
+                             sel.selectPdf, uLight0, uLight1, shadowRay);
+    }
+
+    return prepareMeshEmitterNEE(pathRecord, its, bsdf, lightingCtx,
+                                 sel.slot, sel.selectPdf, uLight0, uLight1, shadowRay);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,16 +366,20 @@ __device__ __forceinline__ bool prepareSpotlightNEE(
     bsdfQuerySpot.wo      = toLocalFromNormal(its.hitNormal, dirToLight);
     bsdfQuerySpot.measure = BSDF_ESolidAngle;
 
-    const Float3 fr = bsdfEval(bsdf, bsdfQuerySpot);
+    Float3 frDiffuse, frSpecular;
+    bsdfEvalSplit(bsdf, bsdfQuerySpot, frDiffuse, frSpecular);
 
     // point light so we assume that random bounces never hit the spot light directly
     // contribution: fr * Le * cos_surface  (pdf = 1, no area term)
     const float cosSurface = fabsf(dot3(its.hitNormal, dirToLight));
 
+    const Float3 common = mul3(mul3(spotLe, cosSurface), pathRecord.throughput);
+
     // Shadow ray — bound to just before the light to avoid self-intersection
-    shadowRay.origin       = its.hitPoint;
-    shadowRay.direction    = dirToLight;
-    shadowRay.tMax         = dist - RT_EPSILON;
-    shadowRay.contribution = mul3(mul3(mul3(fr, spotLe), cosSurface), pathRecord.throughput);
+    shadowRay.origin           = its.hitPoint;
+    shadowRay.direction        = dirToLight;
+    shadowRay.tMax             = dist - RT_EPSILON;
+    shadowRay.contribution     = mul3(frDiffuse,  common);
+    shadowRay.contributionSpec = mul3(frSpecular, common);
     return true;
 }

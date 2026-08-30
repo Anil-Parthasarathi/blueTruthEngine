@@ -106,6 +106,8 @@ static __forceinline__ __device__ EmitterSamplingData makeEmitterSampling(const 
     s.emitterTriIndices = lp.emitterTriIndices;
     s.emitterTriCdf     = lp.emitterTriCdf;
     s.sceneEmitterCdf   = lp.sceneEmitterCdf;
+    s.selectCount       = lp.emitterSelectCount;
+    s.envSlot           = lp.envEmitterSlot;
     return s;
 }
 
@@ -120,6 +122,7 @@ static __forceinline__ __device__ DirectLightingContext makeDirectLightingContex
     ctx.texObjects           = lp.texObjects;
     ctx.triangleMaterialIds  = lp.triangleMaterialIds;
     ctx.textureCount         = lp.textureCount;
+    ctx.env                  = lp.env;
     return ctx;
 }
 
@@ -146,8 +149,10 @@ static __forceinline__ __device__ void sampleAreaEmitterNEE(
         return;
     }
 
+    // The megakernel is physical-only, so it just sums the two halves the
+    // shared NEE math produces.
     pathRecord.accumulatedColor =
-        add3(pathRecord.accumulatedColor, shadowRay.contribution);
+        add3(pathRecord.accumulatedColor, shadowRayTotal(shadowRay));
 }
 
 static __forceinline__ __device__ void sampleSpotlightNEE(
@@ -168,7 +173,7 @@ static __forceinline__ __device__ void sampleSpotlightNEE(
         }
 
         pathRecord.accumulatedColor =
-            add3(pathRecord.accumulatedColor, shadowRay.contribution);
+            add3(pathRecord.accumulatedColor, shadowRayTotal(shadowRay));
     }
 }
 
@@ -193,6 +198,10 @@ static __forceinline__ __device__ bool traceRay(
 {
     Intersection its{};
     if (!traceClosest(handle, pathRecord.ray, its)) {
+        // The ray escaped: pick up the environment light (or the backdrop, for
+        // camera rays).  Contributes nothing when no environment is bound, which
+        // is exactly the pre-environment behaviour.
+        accumulateEnvMiss(pathRecord, lightingCtx);
         return false;
     }
 

@@ -116,10 +116,29 @@ __global__ void wfShade(
 
     PathState rikudo = loadPathState(wf, idx);
 
+    // Radiance produced at THIS vertex goes to one channel, decided before the
+    // scatter (which is what changes styleChannel on the primary hit).
+    const int   vertexCh   = vertexChannel(rikudo);
+    const bool  isPrimary  = (rikudo.bounceCount == 0);
+
+    const DirectLightingContext ctx = makeDirectLightingContext(scene);
+
     const int triIdx = wf.hitTriIndex[idx];
 
     // ── a) Miss path — ray escaped the scene ────────────────────────────
     if (triIdx < 0) {
+
+        // Environment light, or the separately art-directed backdrop for camera
+        // rays.  Adds nothing when the scene has no <environment>.
+        accumulateEnvMiss(rikudo, ctx);
+        addToChannel(wf, vertexCh, idx, rikudo.accumulatedColor);
+
+        if (isPrimary) {
+            // A camera ray that escaped has no surface, so mark the AOVs as
+            // background.  Present uses the negative depth to tell the backdrop
+            // apart from an emitter without needing a seventh buffer.
+            writeMissAOVs(scene, idx);
+        }
 
         storePathState(wf, idx, rikudo);
         wf.rngState[idx] = rng.state;
@@ -128,36 +147,63 @@ __global__ void wfShade(
 
     // ── b) Hit: rebuild megakernel inputs from the SoA ───────────────────
     const Intersection its = loadIntersection(wf, idx);
-    const DirectLightingContext ctx = makeDirectLightingContext(scene);
     const BsdfData bsdf = loadBsdfForTriangle(ctx, scene.bsdfs, scene.triangleBsdfIds, its.triangleIndex, its.uv);
+
+    // ── b-0) Primary-hit AOVs ────────────────────────────────────────────
+    // Always written, in both style modes: albedo and normal are what feed the
+    // OptiX denoiser's guide layers, so they sharpen the photoreal path too.
+    if (isPrimary) {
+        writeHitAOVs(scene, idx, its, bsdf, rikudo.ray);
+    }
 
     // ── b-1) Emitter hit (uses the PREVIOUS bounce's MIS state in ps) ────
     if (ctx.triangleEmitterFlags[its.triangleIndex] != 0) {
         accumulateEmitterHit(rikudo, its, ctx);
     }
 
-    // ── b-2) NEE — enqueue shadow rays instead of tracing them ───────────
+    // ── b-2) Outlines — modulate throughput, do not paint pixels ──────────
+    // Multiplying throughput is what makes lines propagate through reflection
+    // and refraction for free: a line found on a reflected path is carried by
+    // that path's own weight.  Applied BEFORE next-event estimation so the line
+    // occludes direct lighting at this vertex too, rather than being drawn over
+    // a fully lit surface.  edgeFactor is null in physical mode, so the
+    // photoreal path returns on the first branch and pays nothing.
+    applyOutline(wf, scene, idx, rikudo, bsdf);
+
+    // ── b-3) NEE — enqueue shadow rays instead of tracing them ───────────
     if (bsdfIsDiffuse(bsdf)) {
         rikudo.specularBounce = false;
         ShadowRayRecord sr{};
 
         if (prepareAreaEmitterNEE(rikudo, rng, its, bsdf, ctx, sr)){
-            enqueueShadowRay(wf, sr, static_cast<uint32_t>(idx));
+            enqueueShadowRay(wf, sr, static_cast<uint32_t>(idx), isPrimary);
         }
 
         for (int spotIdx = 0; spotIdx < ctx.spotlightCount; spotIdx++) {
             if (prepareSpotlightNEE(rikudo, its, bsdf, ctx, spotIdx, sr)){
-                enqueueShadowRay(wf, sr, static_cast<uint32_t>(idx));
+                enqueueShadowRay(wf, sr, static_cast<uint32_t>(idx), isPrimary);
             }
         }
     } else {
         rikudo.specularBounce = true;
     }
 
-    // ── b-3) BSDF sample (overwrites ps.ray/brdfPDF — must come AFTER NEE) ─
-    scatterPath(rikudo, rng, its, bsdf);
+    // ── b-4) BSDF sample (overwrites ps.ray/brdfPDF — must come AFTER NEE) ─
+    int sampledLobe = DISNEY_LOBE_DIFFUSE;
+    scatterPath(rikudo, rng, its, bsdf, &sampledLobe);
 
-    // ── b-4) Russian roulette + re-enqueue ───────────────────────────────
+    // Fix the path's channel from the lobe chosen at the PRIMARY hit only, then
+    // leave it alone: everything this surface goes on to reflect or refract then
+    // lands in the same channel and receives the same operator.
+    if (isPrimary) {
+        rikudo.styleChannel = styleChannelForLobe(sampledLobe);
+    }
+
+    // Flush this vertex's radiance into its channel.  In physical mode all six
+    // channel pointers alias wf.radiance, so this is unconditional.
+    addToChannel(wf, vertexCh, idx, rikudo.accumulatedColor);
+
+    // ── b-5) Russian roulette + re-enqueue ───────────────────────────────
     if (!russianRoulette(rikudo, rng)) {
         storePathState(wf, idx, rikudo);
         wf.rngState[idx] = rng.state;
@@ -170,9 +216,6 @@ __global__ void wfShade(
 
     const int slot = atomicAdd(wf.rayCountNext, 1);
     wf.rayQueueNext[slot] = idx;
-
-    // Suppress unused-variable warnings while the kernel is a stub.
-    (void)rng; (void)scene;
 }
 
 // ---------------------------------------------------------------------------

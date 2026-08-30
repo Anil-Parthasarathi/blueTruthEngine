@@ -1,0 +1,140 @@
+<scene style="anime">
+    <!-- ====================================================================
+         Transport-aware anime NPR — HDRI companion to scene_anime.xml.
+
+         scene_anime.xml is a closed Cornell box, so an environment light barely
+         reaches it. This scene is open and has NO mesh emitters at all: every
+         photon comes from assets/sky_anime.hdr. That makes it the scene to look
+         at when checking the environment light, because it exercises the parts
+         that a closed box never touches:
+
+           • Environment importance sampling. The sky's sun disc is ~1.6 deg
+             across and over a thousand times brighter than the mean, so uniform
+             sampling would essentially never find it. If the 2D CDF or its pdf
+             is wrong, the render is obviously wrong rather than subtly wrong.
+           • MIS between environment NEE and BSDF sampling on escaped rays.
+           • The env-only lighting path, where the emitter selection CDF holds a
+             single slot and there are no mesh emitters to fall back on.
+
+         Regenerate the sky with `python3 tools/make_sky_hdr.py`.
+
+         Press N to A/B stylized against photorealistic, V to cycle debug views.
+
+         What to look for:
+           • The chrome sphere posterizes its reflection OF THE SKY, so the sun
+             and the horizon line become flat bands that still sit in the
+             geometrically correct place, and the bunny's outline is drawn
+             inside the sphere from the sphere's point of view.
+           • The gem refracts the sky into banded colour with a chroma push.
+           • The bunny's shadow on the ground is a hard anime edge whose shape
+             comes from a real sun-disc penumbra, softening correctly with
+             distance from the contact point.
+         ==================================================================== -->
+
+    <!-- ── Environment ────────────────────────────────────────────────────
+         background="env" so the sky itself is visible, which makes it easy to
+         confirm the HDRI orientation. Switch to background="color" for the flat
+         backdrop over physical lighting that scene_anime.xml uses; `yaw` spins
+         the sky (and therefore the sun) without touching the geometry.
+         ------------------------------------------------------------------- -->
+    <environment filename="assets/sky_anime.hdr"
+                 background="env"
+                 intensity="1.0" yaw="0.0"
+                 backgroundR="0.06" backgroundG="0.07" backgroundB="0.12" />
+
+    <!-- ── Styles ─────────────────────────────────────────────────────────
+         Band counts are opt-in per channel, so a style only posterizes what it
+         names. Nothing here bands the transmitted channel except gemStyle.
+         ------------------------------------------------------------------- -->
+    <style name="skinStyle"
+           diffuse_ramp="assets/ramp_skin.png"
+           diffuse_bands="3" band_softness="0.04" tone_scale="1.4"
+           spec_threshold="0.35" spec_softness="0.02" spec_intensity="1.4"
+           rim_strength="0.6" rim_power="3.5"
+           rim_colorR="0.60" rim_colorG="0.74" rim_colorB="1.00"
+           indirect_gain="0.8"
+           line_colorR="0.05" line_colorG="0.03" line_colorB="0.08"
+           line_width="0.004" line_strength="0.9"
+           outline_normal_threshold="0.35" outline_depth_threshold="0.06" />
+
+    <!-- Ground. Neutral lit band so the ground keeps its own albedo, and a wide
+         shadow band so the bunny's cast shadow reads as a single flat shape. -->
+    <style name="groundStyle"
+           diffuse_ramp="assets/ramp_cloth.png"
+           diffuse_bands="2" band_softness="0.03" tone_scale="1.5"
+           spec_threshold="0.8" spec_softness="0.05" spec_intensity="0.3"
+           indirect_gain="0.7"
+           line_colorR="0.02" line_colorG="0.02" line_colorB="0.06"
+           line_width="0.003" line_strength="0.8"
+           outline_normal_threshold="0.4" outline_depth_threshold="0.08" />
+
+    <!-- reflect_bands is the anime-metal trick: the sky's smooth gradient
+         becomes a few flat steps in the reflection, pulled slightly cool. -->
+    <style name="metalStyle"
+           diffuse_bands="2" band_softness="0.02"
+           spec_threshold="0.3" spec_softness="0.02" spec_intensity="1.6"
+           reflect_bands="5" reflect_gain="1.1" reflect_tint_mix="0.30"
+           reflect_tintR="0.74" reflect_tintG="0.86" reflect_tintB="1.00"
+           indirect_gain="0.9"
+           line_colorR="0.02" line_colorG="0.04" line_colorB="0.08"
+           line_width="0.005" line_strength="1.0"
+           outline_normal_threshold="0.3" outline_depth_threshold="0.05" />
+
+    <style name="gemStyle"
+           transmit_bands="5" transmit_gain="1.2" chroma_shift="0.8"
+           band_softness="0.015"
+           reflect_bands="3" reflect_gain="1.0"
+           spec_threshold="0.25" spec_softness="0.02" spec_intensity="2.0"
+           indirect_gain="1.0"
+           line_colorR="0.10" line_colorG="0.02" line_colorB="0.14"
+           line_width="0.004" line_strength="0.7"
+           outline_normal_threshold="0.25" outline_depth_threshold="0.05" />
+
+    <!-- ── BSDFs ─────────────────────────────────────────────────────────── -->
+    <bsdf name="groundDiffuse" type="diffuse" albedoR="0.62" albedoG="0.66" albedoB="0.70" />
+    <bsdf name="bunnyBody"     type="diffuse" albedoR="0.90" albedoG="0.72" albedoB="0.66" />
+
+    <!-- Metallic anime: the ordinary Disney BSDF with metallic=1. The style
+         rides on top of physically correct metal transport. -->
+    <bsdf name="chrome" type="disney"
+          base_colorR="0.95" base_colorG="0.96" base_colorB="1.00"
+          roughness="0.06" metallic="1.0" specular="0.9"
+          clearcoat="0.25" clearcoat_gloss="0.9" eta="1.5" />
+
+    <!-- Jewel anime: Disney with full specular transmission. -->
+    <bsdf name="gem" type="disney"
+          base_colorR="0.35" base_colorG="0.85" base_colorB="0.72"
+          roughness="0.03" metallic="0.0" specular="1.0"
+          specular_transmission="1.0" specular_tint="0.4"
+          eta="1.62" />
+
+    <!-- ── Materials (style attaches here, not to the BSDF) ──────────────── -->
+    <material name="groundM" bsdf="groundDiffuse" style="groundStyle" />
+    <material name="bunnyM"  bsdf="bunnyBody"     style="skinStyle" />
+    <material name="chromeM" bsdf="chrome"        style="metalStyle" />
+    <material name="gemM"    bsdf="gem"           style="gemStyle" />
+
+    <!-- ── Geometry ──────────────────────────────────────────────────────── -->
+    <!-- floor.obj is a 2x2 quad at y=0; scaled out so the ground meets the sky
+         at the horizon instead of ending inside the frame. -->
+    <mesh filename="assets/floor.obj" material="groundM"
+          scaleX="24" scaleY="1" scaleZ="24" />
+
+    <!-- Same transform as the other bunny scenes in assets/. -->
+    <mesh filename="assets/bunny.obj" material="bunnyM"
+          scaleX="4" scaleY="4" scaleZ="4" rotY="15"
+          posX="0.00" posY="-0.15" posZ="0.20" />
+
+    <mesh filename="assets/sphere1.obj" material="chromeM"
+          posX="-0.15" posY="0.00" posZ="-0.50" />
+
+    <mesh filename="assets/sphere2.obj" material="gemM"
+          posX="0.20" posY="0.00" posZ="-0.80" />
+
+    <!-- Level view so the horizon sits near the middle of the frame: sky above,
+         ground below, all three subjects against both. -->
+    <camera eyeX="0.0" eyeY="0.8" eyeZ="2.7"
+            lookAtX="0.0" lookAtY="0.8" lookAtZ="-0.2"
+            upX="0" upY="1" upZ="0" fovY="40" />
+    <window width="1280" height="720" />
+</scene>

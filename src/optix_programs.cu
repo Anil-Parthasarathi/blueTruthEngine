@@ -81,6 +81,9 @@ extern "C" __global__ void __raygen__rg()
         rikudo.eta              = 1.0f;
         rikudo.brdfPDF          = 0.0f;
         rikudo.specularBounce   = true;
+        // The megakernel is physical-only; it carries the field so the shared
+        // PathState stays one type, but never reads it.
+        rikudo.styleChannel     = STYLE_CH_INDIRECT_DIFFUSE;
 
         while (rikudo.bounceCount < MAX_BOUNCES) {
             if (!traceRay(rikudo, rng, lightingCtx,

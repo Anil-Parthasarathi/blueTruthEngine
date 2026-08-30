@@ -8,8 +8,11 @@
 // ---------------------------------------------------------------------------
 
 #include "render_kernel.h"
+#include "rt_cuda_math.cuh"          // add3
 #include "rt_intersect.cuh"          // Ray
 #include "rt_emitter_sampling.cuh"   // EmitterSamplingData
+#include "rt_environment.cuh"        // EnvLightData
+#include "rt_style.cuh"              // StyleChannel
 
 #include <cuda_runtime.h>            // cudaTextureObject_t
 #include <cstdint>
@@ -29,6 +32,12 @@ struct PathState {
     float    brdfPDF;
     bool     specularBounce;
     uint32_t pixelIndex;
+
+    // StyleChannel this path's radiance belongs to.  Set once at the primary hit
+    // from the sampled BSDF lobe and then left alone, so everything a metal
+    // surface reflects (or a gem refracts) stays in that surface's channel and
+    // receives its operator.  The megakernel carries the field but ignores it.
+    int      styleChannel;
 };
 
 // ---------------------------------------------------------------------------
@@ -48,6 +57,8 @@ struct DirectLightingContext {
     const cudaTextureObject_t* texObjects;
     const int* triangleMaterialIds;
     int textureCount;
+    // Environment light — universal, active in every render and style mode.
+    EnvLightData env;
 };
 
 // ---------------------------------------------------------------------------
@@ -58,10 +69,24 @@ struct DirectLightingContext {
 //    • Wavefront:  writes it into the shadow SoA; the connect stage traces it
 //      and atomically adds `contribution` to the path's radiance.
 //  `contribution` is already multiplied by the path throughput.
+//
+//  The contribution is carried as two halves so that direct lighting at the
+//  primary hit can converge the cel body tone and the anime highlight
+//  separately.  ONE shadow ray still serves both — only the payload widens.
+//  In physical mode the two halves are added into the same buffer, which sums
+//  to exactly the same estimate.
 // ---------------------------------------------------------------------------
 struct ShadowRayRecord {
     Float3 origin;
     Float3 direction;    // normalised
     float  tMax;         // distToLight - RT_EPSILON
-    Float3 contribution; // radiance × MIS weight × throughput if unoccluded
+    Float3 contribution;     // diffuse-ish half: radiance × MIS × throughput
+    Float3 contributionSpec; // specular-ish half
 };
+
+// Total contribution of a shadow ray, for callers that do not care about the
+// split (the megakernel, and any physical-mode-only code).
+__device__ __forceinline__ Float3 shadowRayTotal(const ShadowRayRecord& sr)
+{
+    return add3(sr.contribution, sr.contributionSpec);
+}

@@ -4,6 +4,7 @@
 
 #include "render_kernel.h"
 #include "rt_cuda_math.cuh"
+#include "rt_style.cuh"      // StyleChannel — for the lobe → channel mapping
 
 #include <cmath>
 
@@ -59,16 +60,74 @@ __device__ __forceinline__ float bsdfPdf(const BsdfData& b, const BsdfQueryRecor
     return 0.0f;
 }
 
+// Sample the BSDF.  `outLobe`, when non-null, reports which DisneyLobe the
+// sample came from so the integrator can route the rest of the path into the
+// matching style channel.  Every BSDF type maps onto the same four-lobe enum:
+// Mirror is a metal reflection, Dielectric is glass, Diffuse is diffuse, and
+// Microfacet reports metal or diffuse depending on the sub-lobe it picked.
 __device__ __forceinline__ Float3 bsdfSample(const BsdfData& b, BsdfQueryRecord& rec,
-                                              float u1, float u2, float* outPdf = nullptr)
+                                              float u1, float u2, float* outPdf = nullptr,
+                                              int* outLobe = nullptr)
 {
-    if (b.type == BSDF_Diffuse)    return bsdfSampleDiffuse(b, rec, u1, u2, outPdf);
-    if (b.type == BSDF_Dielectric) return bsdfSampleDielectric(b, rec, u1, u2, outPdf);
-    if (b.type == BSDF_Mirror)     return bsdfSampleMirror(b, rec, u1, u2, outPdf);
-    if (b.type == BSDF_Microfacet) return bsdfSampleMicrofacet(b, rec, u1, u2, outPdf);
-    if (b.type == BSDF_Disney)     return bsdfSampleDisney(b, rec, u1, u2, outPdf);
+    if (b.type == BSDF_Diffuse) {
+        if (outLobe) *outLobe = DISNEY_LOBE_DIFFUSE;
+        return bsdfSampleDiffuse(b, rec, u1, u2, outPdf);
+    }
+    if (b.type == BSDF_Dielectric) {
+        if (outLobe) *outLobe = DISNEY_LOBE_GLASS;
+        return bsdfSampleDielectric(b, rec, u1, u2, outPdf);
+    }
+    if (b.type == BSDF_Mirror) {
+        if (outLobe) *outLobe = DISNEY_LOBE_METAL;
+        return bsdfSampleMirror(b, rec, u1, u2, outPdf);
+    }
+    if (b.type == BSDF_Microfacet) {
+        // bsdfSampleMicrofacet splits u1 against ks: below ks it takes the
+        // Beckmann specular lobe, above it the cosine diffuse lobe.
+        if (outLobe) *outLobe = (u1 < microfacetKs(b)) ? DISNEY_LOBE_METAL : DISNEY_LOBE_DIFFUSE;
+        return bsdfSampleMicrofacet(b, rec, u1, u2, outPdf);
+    }
+    if (b.type == BSDF_Disney)     return bsdfSampleDisney(b, rec, u1, u2, outPdf, outLobe);
     if (outPdf) *outPdf = 0.0f;
+    if (outLobe) *outLobe = DISNEY_LOBE_DIFFUSE;
     return {0.0f, 0.0f, 0.0f};
+}
+
+// Split the BSDF evaluation into the halves the direct-lighting channels want.
+// Only the Disney BSDF has a real decomposition; for the others the whole
+// response goes to whichever half matches its character, so a scene mixing
+// material types still routes sensibly.
+__device__ __forceinline__ void bsdfEvalSplit(const BsdfData& b, const BsdfQueryRecord& rec,
+                                               Float3& outDiffuseish, Float3& outSpecularish)
+{
+    if (b.type == BSDF_Disney) {
+        bsdfEvalDisneySplit(b, rec, outDiffuseish, outSpecularish);
+        return;
+    }
+
+    const Float3 total = bsdfEval(b, rec);
+
+    if (b.type == BSDF_Microfacet) {
+        // Microfacet's eval is kd/pi plus a scalar specular term; approximate the
+        // split by the same ks weighting used for sampling.
+        const float ks = microfacetKs(b);
+        outSpecularish = mul3(total, ks);
+        outDiffuseish  = mul3(total, 1.0f - ks);
+        return;
+    }
+
+    // Mirror and Dielectric are delta BSDFs whose eval is zero, so this reduces
+    // to zero for both halves; Diffuse is entirely diffuse-ish.
+    outDiffuseish  = total;
+    outSpecularish = {0.0f, 0.0f, 0.0f};
+}
+
+// Map a sampled lobe onto the radiance channel the path should feed from here on.
+__device__ __forceinline__ int styleChannelForLobe(int lobe)
+{
+    if (lobe == DISNEY_LOBE_GLASS)                                   return STYLE_CH_TRANSMITTED;
+    if (lobe == DISNEY_LOBE_METAL || lobe == DISNEY_LOBE_CLEARCOAT)  return STYLE_CH_REFLECTED;
+    return STYLE_CH_INDIRECT_DIFFUSE;
 }
 
 // True for delta BSDFs (dirac reflection/refraction) — skip direct light sampling for these.

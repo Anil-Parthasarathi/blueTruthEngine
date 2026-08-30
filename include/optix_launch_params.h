@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 #include "render_kernel.h"             // Float3, TriangleData, BsdfData, EmitterData, ...
+#include "rt_environment.cuh"          // EnvLightData
 #include "wavefront/wavefront_buffers.h" // WavefrontSoA — no optix.h dependency
 
 #include <optix.h>           // OptixTraversableHandle
@@ -58,6 +59,7 @@ struct LaunchParams {
     // ── Emission ────────────────────────────────────────────────────
     const uint8_t* triangleEmitterFlags;
     const Float3*  triangleEmission;
+    const int*     triangleObjectIds;   // per-triangle mesh index (outline probes)
 
     // ── Mesh (area) emitters ────────────────────────────────────────
     const EmitterData* emitters;
@@ -65,6 +67,8 @@ struct LaunchParams {
     const int*         emitterTriIndices;
     const float*       emitterTriCdf;
     const float*       sceneEmitterCdf;
+    int                emitterSelectCount; // emitterCount (+1 when env is present)
+    int                envEmitterSlot;     // == emitterCount, or -1
 
     // ── Spotlights ──────────────────────────────────────────────────
     const SpotlightData* spotlights;
@@ -73,6 +77,13 @@ struct LaunchParams {
     // ── Textures (one CUDA texture object handle per material) ───────
     const cudaTextureObject_t* texObjects;
     int                        textureCount;
+
+    // ── Environment light (universal: both renderers, both style modes) ──
+    EnvLightData env;
+
+    // ── Stylization (read by the outline probe raygen) ────────────────
+    const StyleData* styles;
+    int              styleCount;
 
     // ── Wavefront mode SoA ──────────────────────────────────────────
     // All pointers are null/zero in megakernel mode.
