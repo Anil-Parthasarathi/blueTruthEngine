@@ -63,9 +63,24 @@ OptixProgramGroup       s_pgHitRadiance  = nullptr;
 OptixShaderBindingTable s_sbt            = {};
 bool                    s_optixReady     = false;
 
-CUdeviceptr            s_gasOutputBuffer = 0;
-OptixTraversableHandle s_gasHandle       = 0;
-Float3*                s_gasVertices_d   = nullptr;
+Float3*                             s_gasVertices_d = nullptr;
+std::vector<OptixTraversableHandle> s_gasHandles;
+std::vector<CUdeviceptr>            s_gasBuffers;
+
+OptixTraversableHandle s_iasHandle             = 0;
+CUdeviceptr            s_iasOutputBuffer       = 0;
+CUdeviceptr            s_iasTempBuffer         = 0;
+size_t                 s_iasTempSize           = 0;
+size_t                 s_iasOutputSize         = 0;
+CUdeviceptr            s_instances_d           = 0;
+int                    s_iasFramesSinceRebuild = 0;
+
+int                           s_objectCount          = 0;
+std::vector<ObjectDesc>       s_objects_h;
+std::vector<ObjectTransform>  s_objectTransforms_h;
+ObjectTransform*              s_objectTransforms_d   = nullptr;
+int*                          s_objectTriOffset_d    = nullptr;
+int*                          s_triangleObjectId_d   = nullptr;
 
 LaunchParams* s_launchParams_d = nullptr;
 

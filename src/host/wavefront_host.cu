@@ -124,6 +124,10 @@ static WfSceneView buildSceneView(int frameIndex)
     WfSceneView sv = {};
     sv.triangles             = s_triangles_d;
     sv.triangleCount         = s_triangleCount;
+    sv.objectTriOffset       = s_objectTriOffset_d;
+    sv.triangleObjectId      = s_triangleObjectId_d;
+    sv.objectTransforms      = s_objectTransforms_d;
+    sv.objectCount           = s_objectCount;
     sv.triangleEmitterFlags  = s_triangleEmitterFlags_d;
     sv.triangleEmission      = s_triangleEmission_d;
     sv.bsdfs                 = s_bsdfs_d;
@@ -175,9 +179,14 @@ void cudaRenderWavefront(uint32_t* devPtr, int imageWidth, int imageHeight)
         // One thread per active ray; results land in the hit buffer.
         {
             LaunchParams lp = {};
-            lp.handle      = s_gasHandle;
-            lp.triangles   = s_triangles_d;
-            lp.wf          = wf;
+            lp.handle            = s_iasHandle;
+            lp.triangles         = s_triangles_d;
+            lp.triangleCount     = s_triangleCount;
+            lp.objectTriOffset   = s_objectTriOffset_d;
+            lp.triangleObjectId  = s_triangleObjectId_d;
+            lp.objectTransforms  = s_objectTransforms_d;
+            lp.objectCount       = s_objectCount;
+            lp.wf                = wf;
             CUDA_CHECK(cudaMemcpy(s_launchParams_d, &lp, sizeof(LaunchParams), cudaMemcpyHostToDevice));
 
             OPTIX_CHECK(optixLaunch(s_optixPipeline, 0 /*stream*/,
@@ -202,7 +211,7 @@ void cudaRenderWavefront(uint32_t* devPtr, int imageWidth, int imageHeight)
         CUDA_CHECK(cudaMemcpy(&shadowCount, wf.shadowCount, sizeof(int), cudaMemcpyDeviceToHost));
         if (shadowCount > 0) {
             LaunchParams lp = {};
-            lp.handle = s_gasHandle;
+            lp.handle = s_iasHandle;
             lp.wf     = wf;
             CUDA_CHECK(cudaMemcpy(s_launchParams_d, &lp, sizeof(LaunchParams), cudaMemcpyHostToDevice));
 

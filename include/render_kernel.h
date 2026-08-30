@@ -19,11 +19,38 @@ struct Float4 {
 };
 
 /// A single triangle with positions, per-vertex normals, and texture coordinates.
+///
+/// Positions and normals are in the OBJECT-LOCAL space of the owning object
+/// (see ObjectDesc).  The object's transform is applied by OptiX during
+/// traversal, so moving an object never touches this data.
 struct TriangleData {
     Float3 v0, v1, v2;   // vertex positions
     Float3 n0, n1, n2;   // vertex normals (for smooth shading)
     Float2 uv0, uv1, uv2; // texture coordinates (default {0,0} if OBJ has none)
 };
+
+/// Object-to-world affine transform for one instanced object.
+/// Row-major 3x4, laid out exactly like OptixInstance::transform so the same
+/// bytes can be handed straight to the instance acceleration structure build.
+struct ObjectTransform {
+    float m[12];
+};
+
+/// One instanced object: a contiguous run of triangles in the flat triangle
+/// array, plus the transform placing its local geometry in the world.
+/// Each `<mesh>` in the scene description becomes one object / one instance.
+struct ObjectDesc {
+    int             triOffset;   // first triangle index in the flat array
+    int             triCount;    // number of triangles owned by this object
+    ObjectTransform transform;   // initial object-to-world transform
+};
+
+inline ObjectTransform objectTransformIdentity()
+{
+    ObjectTransform t{};
+    t.m[0] = 1.0f; t.m[5] = 1.0f; t.m[10] = 1.0f;
+    return t;
+}
 
 // RGB color / radiance type.
 // (We keep using Float3 for convenience throughout the renderer.)
@@ -102,6 +129,16 @@ void cudaInitScene(const TriangleData* triangles, int triangleCount,
 /// Backwards-compatible single-triangle init (implemented via cudaInitScene).
 void cudaInit(const TriangleData& tri, const Float3& color,
               int imageWidth, int imageHeight);
+
+/// Upload the object table that partitions the flat triangle array into
+/// instanced objects.  Must be called after cudaInitScene and before
+/// cudaInitOptix, which builds one GAS per object plus the top-level IAS.
+void cudaInitObjects(const ObjectDesc* objects, int objectCount);
+
+/// Replace every object-to-world transform and refit the IAS so the next
+/// trace sees the new positions.  `objectCount` must match cudaInitObjects.
+/// Call once per simulation step; it does not reset accumulation.
+void cudaSetObjectTransforms(const ObjectTransform* transforms, int objectCount);
 
 /// Upload camera parameters to the GPU.
 void cudaInitCamera(const CameraData& camera);

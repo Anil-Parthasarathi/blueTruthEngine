@@ -78,12 +78,15 @@ __device__ __forceinline__ Intersection loadIntersection(const WavefrontSoA& wf,
 __device__ __forceinline__ EmitterSamplingData makeEmitterSampling(const WfSceneView& scene)
 {
     EmitterSamplingData s{};
-    s.triangles         = scene.triangles;
-    s.emitters          = scene.emitters;
-    s.emitterCount      = scene.emitterCount;
-    s.emitterTriIndices = scene.emitterTriIndices;
-    s.emitterTriCdf     = scene.emitterTriCdf;
-    s.sceneEmitterCdf   = scene.sceneEmitterCdf;
+    s.triangles          = scene.triangles;
+    s.emitters           = scene.emitters;
+    s.emitterCount       = scene.emitterCount;
+    s.emitterTriIndices  = scene.emitterTriIndices;
+    s.emitterTriCdf      = scene.emitterTriCdf;
+    s.sceneEmitterCdf    = scene.sceneEmitterCdf;
+    s.triangleObjectId   = scene.triangleObjectId;
+    s.objectTransforms   = scene.objectTransforms;
+    s.objectCount        = scene.objectCount;
     return s;
 }
 

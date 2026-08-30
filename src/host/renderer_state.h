@@ -92,10 +92,28 @@ extern OptixProgramGroup       s_pgHitRadiance;
 extern OptixShaderBindingTable s_sbt;
 extern bool                    s_optixReady;
 
-// Geometry acceleration structure (GAS) built on-GPU from the triangle data.
-extern CUdeviceptr            s_gasOutputBuffer;
-extern OptixTraversableHandle s_gasHandle;
-extern Float3*                s_gasVertices_d;   // packed 3*triCount vertices
+// Per-object geometry acceleration structures (GAS) — one per ObjectDesc.
+// The top-level traversable handed to optixTrace is the IAS below.
+extern Float3*                              s_gasVertices_d;   // packed 3*triCount vertices
+extern std::vector<OptixTraversableHandle>  s_gasHandles;
+extern std::vector<CUdeviceptr>             s_gasBuffers;
+
+// Instance acceleration structure (IAS) — top-level traversable.
+extern OptixTraversableHandle s_iasHandle;
+extern CUdeviceptr            s_iasOutputBuffer;
+extern CUdeviceptr            s_iasTempBuffer;
+extern size_t                 s_iasTempSize;
+extern size_t                 s_iasOutputSize;
+extern CUdeviceptr            s_instances_d;
+extern int                    s_iasFramesSinceRebuild;
+
+// Instanced object table (host + device).
+extern int                    s_objectCount;
+extern std::vector<ObjectDesc>      s_objects_h;
+extern std::vector<ObjectTransform> s_objectTransforms_h; // current object→world
+extern ObjectTransform*       s_objectTransforms_d;
+extern int*                   s_objectTriOffset_d;   // [objectCount + 1]
+extern int*                   s_triangleObjectId_d;  // [triangleCount]
 
 // Device copy of the launch parameters (uploaded each frame).
 extern LaunchParams* s_launchParams_d;
@@ -141,7 +159,8 @@ extern WavefrontBuffers s_wf;
 
 // optix_setup.cu
 void ensureOptixPipeline();
-void buildGAS();
+void buildGAS();          // builds per-object GAS + top-level IAS
+void buildIAS(bool update); // full build (false) or refit (true)
 void freeOptixState();
 
 // scene_upload.cu

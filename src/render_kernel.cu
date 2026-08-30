@@ -90,9 +90,13 @@ void cudaRender(int imageWidth, int imageHeight)
     lp.launchOffsetY        = 0;
     lp.frameIndex           = s_frameIndex;
     lp.camera               = s_camera_h;
-    lp.handle               = s_gasHandle;
+    lp.handle               = s_iasHandle;
     lp.triangles            = s_triangles_d;
     lp.triangleCount        = s_triangleCount;
+    lp.objectTriOffset      = s_objectTriOffset_d;
+    lp.triangleObjectId     = s_triangleObjectId_d;
+    lp.objectTransforms     = s_objectTransforms_d;
+    lp.objectCount          = s_objectCount;
     lp.bsdfs                = s_bsdfs_d;
     lp.bsdfCount            = s_bsdfCount;
     lp.triangleBsdfIds      = s_triangleBsdfIds_d;

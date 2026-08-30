@@ -70,6 +70,40 @@ __device__ __forceinline__ float maxCoeff3(const Float3& v)
 }
 
 // ---------------------------------------------------------------------------
+// Object-to-world transforms (row-major 3x4 affine — see ObjectTransform)
+// ---------------------------------------------------------------------------
+
+// Full affine transform of a position.
+__device__ __forceinline__ Float3 transformPoint34(const ObjectTransform& t, const Float3& p)
+{
+    return {
+        t.m[0] * p.x + t.m[1] * p.y + t.m[2]  * p.z + t.m[3],
+        t.m[4] * p.x + t.m[5] * p.y + t.m[6]  * p.z + t.m[7],
+        t.m[8] * p.x + t.m[9] * p.y + t.m[10] * p.z + t.m[11]
+    };
+}
+
+// Transform a direction/normal by the inverse-transpose of the linear 3x3.
+// Correct for non-uniform scale; for pure rotation it reduces to R*n.
+__device__ __forceinline__ Float3 transformNormal34(const ObjectTransform& t, const Float3& n)
+{
+    // Inverse of 3x3 linear part via adjugate / det, then transpose-multiply
+    // is equivalent to multiplying by the cofactor matrix (no divide by det
+    // needed before normalize).
+    const float a00 = t.m[0], a01 = t.m[1], a02 = t.m[2];
+    const float a10 = t.m[4], a11 = t.m[5], a12 = t.m[6];
+    const float a20 = t.m[8], a21 = t.m[9], a22 = t.m[10];
+
+    // Cofactors of A^T = cofactors laid out transposed = columns of adj(A)
+    const Float3 out = {
+        (a11 * a22 - a12 * a21) * n.x + (a02 * a21 - a01 * a22) * n.y + (a01 * a12 - a02 * a11) * n.z,
+        (a12 * a20 - a10 * a22) * n.x + (a00 * a22 - a02 * a20) * n.y + (a02 * a10 - a00 * a12) * n.z,
+        (a10 * a21 - a11 * a20) * n.x + (a01 * a20 - a00 * a21) * n.y + (a00 * a11 - a01 * a10) * n.z
+    };
+    return normalize3(out);
+}
+
+// ---------------------------------------------------------------------------
 // Local shading frame helpers (+Z aligns with the provided normal)
 // ---------------------------------------------------------------------------
 

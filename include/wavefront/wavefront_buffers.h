@@ -96,8 +96,12 @@ struct WavefrontSoA {
 //  uniform across a warp.)
 // ---------------------------------------------------------------------------
 struct WfSceneView {
-    const TriangleData*        triangles;
+    const TriangleData*        triangles;      // object-local geometry
     int                        triangleCount;
+    const int*                 objectTriOffset;
+    const int*                 triangleObjectId;
+    const ObjectTransform*     objectTransforms;
+    int                        objectCount;
     const uint8_t*             triangleEmitterFlags;
     const Float3*              triangleEmission;
     const BsdfData*            bsdfs;

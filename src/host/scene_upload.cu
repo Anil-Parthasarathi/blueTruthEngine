@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <vector>
 
 void cudaInitScene(const TriangleData* triangles, int triangleCount,
                     const Float3* materials, int materialCount,
@@ -72,6 +73,78 @@ void cudaInitCamera(const CameraData& camera)
     // Stage the camera on the host; it is copied into LaunchParams each frame.
     // (The OptiX module reads the camera from launch params, not a __constant__.)
     s_camera_h = camera;
+}
+
+void cudaInitObjects(const ObjectDesc* objects, int objectCount)
+{
+    // Free previous object tables.
+    if (s_objectTransforms_d) { cudaFree(s_objectTransforms_d); s_objectTransforms_d = nullptr; }
+    if (s_objectTriOffset_d)  { cudaFree(s_objectTriOffset_d);  s_objectTriOffset_d  = nullptr; }
+    if (s_triangleObjectId_d) { cudaFree(s_triangleObjectId_d); s_triangleObjectId_d = nullptr; }
+    s_objects_h.clear();
+    s_objectTransforms_h.clear();
+    s_objectCount = 0;
+
+    if (!objects || objectCount <= 0) return;
+
+    s_objectCount = objectCount;
+    s_objects_h.assign(objects, objects + objectCount);
+    s_objectTransforms_h.resize(static_cast<size_t>(objectCount));
+    for (int i = 0; i < objectCount; ++i)
+        s_objectTransforms_h[static_cast<size_t>(i)] = objects[i].transform;
+
+    // Prefix-sum style offset array: objectTriOffset[i] = start of object i,
+    // objectTriOffset[objectCount] = total triangle count.
+    std::vector<int> triOffsets(static_cast<size_t>(objectCount + 1));
+    for (int i = 0; i < objectCount; ++i)
+        triOffsets[static_cast<size_t>(i)] = objects[i].triOffset;
+    triOffsets[static_cast<size_t>(objectCount)] =
+        objects[objectCount - 1].triOffset + objects[objectCount - 1].triCount;
+
+    // Per-triangle owning object id.
+    std::vector<int> triObjectId(static_cast<size_t>(s_triangleCount), 0);
+    for (int i = 0; i < objectCount; ++i) {
+        const int begin = objects[i].triOffset;
+        const int end   = begin + objects[i].triCount;
+        for (int t = begin; t < end && t < s_triangleCount; ++t)
+            triObjectId[static_cast<size_t>(t)] = i;
+    }
+
+    CUDA_CHECK(cudaMalloc(&s_objectTransforms_d,
+                          sizeof(ObjectTransform) * static_cast<size_t>(objectCount)));
+    CUDA_CHECK(cudaMemcpy(s_objectTransforms_d, s_objectTransforms_h.data(),
+                          sizeof(ObjectTransform) * static_cast<size_t>(objectCount),
+                          cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMalloc(&s_objectTriOffset_d,
+                          sizeof(int) * static_cast<size_t>(objectCount + 1)));
+    CUDA_CHECK(cudaMemcpy(s_objectTriOffset_d, triOffsets.data(),
+                          sizeof(int) * static_cast<size_t>(objectCount + 1),
+                          cudaMemcpyHostToDevice));
+
+    if (s_triangleCount > 0) {
+        CUDA_CHECK(cudaMalloc(&s_triangleObjectId_d,
+                              sizeof(int) * static_cast<size_t>(s_triangleCount)));
+        CUDA_CHECK(cudaMemcpy(s_triangleObjectId_d, triObjectId.data(),
+                              sizeof(int) * static_cast<size_t>(s_triangleCount),
+                              cudaMemcpyHostToDevice));
+    }
+
+    fprintf(stdout, "[scene] Uploaded %d instanced objects\n", objectCount);
+}
+
+void cudaSetObjectTransforms(const ObjectTransform* transforms, int objectCount)
+{
+    if (!transforms || objectCount != s_objectCount || s_objectCount <= 0) return;
+
+    s_objectTransforms_h.assign(transforms, transforms + objectCount);
+    CUDA_CHECK(cudaMemcpy(s_objectTransforms_d, transforms,
+                          sizeof(ObjectTransform) * static_cast<size_t>(objectCount),
+                          cudaMemcpyHostToDevice));
+
+    // Refit the IAS so the next trace sees the new poses.
+    if (s_optixReady)
+        buildIAS(/*update=*/true);
 }
 
 void cudaInitTriangleEmission(const Float3* triangleEmission, int triangleCount)
@@ -338,4 +411,11 @@ void freeSceneUploads()
     s_cuArrays.clear();
     if (s_texObjects_d) { cudaFree(s_texObjects_d); s_texObjects_d = nullptr; }
     s_textureCount = 0;
+
+    if (s_objectTransforms_d) { cudaFree(s_objectTransforms_d); s_objectTransforms_d = nullptr; }
+    if (s_objectTriOffset_d)  { cudaFree(s_objectTriOffset_d);  s_objectTriOffset_d  = nullptr; }
+    if (s_triangleObjectId_d) { cudaFree(s_triangleObjectId_d); s_triangleObjectId_d = nullptr; }
+    s_objects_h.clear();
+    s_objectTransforms_h.clear();
+    s_objectCount = 0;
 }

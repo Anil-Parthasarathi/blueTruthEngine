@@ -112,7 +112,10 @@ extern "C" __global__ void __closesthit__radiance()
     Intersection* its =
         reinterpret_cast<Intersection*>(unpackPointer(optixGetPayload_0(), optixGetPayload_1()));
 
-    const int   triIdx = optixGetPrimitiveIndex();
+    // Primitive index is GAS-local; recover the flat triangle index via the
+    // instance's triangle offset (see cudaInitObjects / ObjectDesc).
+    const unsigned int instId = optixGetInstanceId();
+    const int triIdx = params.objectTriOffset[instId] + static_cast<int>(optixGetPrimitiveIndex());
     const float2 bary  = optixGetTriangleBarycentrics();
     const float  u     = bary.x;
     const float  v     = bary.y;
@@ -126,13 +129,17 @@ extern "C" __global__ void __closesthit__radiance()
 
     its->t             = t;
     its->triangleIndex = triIdx;
+    // World-space hit point from the world ray (already in world).
     its->hitPoint      = { O.x + t * D.x, O.y + t * D.y, O.z + t * D.z };
 
-    its->hitNormal = normalize3({
+    // Normals live in object-local space; transform with the inverse-transpose.
+    const float3 localN = {
         w0 * tri.n0.x + u * tri.n1.x + v * tri.n2.x,
         w0 * tri.n0.y + u * tri.n1.y + v * tri.n2.y,
         w0 * tri.n0.z + u * tri.n1.z + v * tri.n2.z
-    });
+    };
+    const float3 worldN = optixTransformNormalFromObjectToWorldSpace(localN);
+    its->hitNormal = normalize3({ worldN.x, worldN.y, worldN.z });
 
     its->uv = {
         w0 * tri.uv0.x + u * tri.uv1.x + v * tri.uv2.x,

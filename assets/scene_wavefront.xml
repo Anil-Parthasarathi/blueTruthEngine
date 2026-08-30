@@ -1,0 +1,181 @@
+<scene>
+    <!--
+        scene_wavefront.xml — designed to expose wavefront's advantages over megakernel.
+
+        The three levers that decide which mode wins:
+
+        1. PATH-LENGTH VARIANCE (most important)
+           Wavefront processes only *active* paths each bounce, so when short paths
+           (diffuse walls, ~3-5 bounces) die early, later bounces process a fraction of
+           the original workload.  The megakernel can't do this: every thread in a warp
+           runs until the *longest* path in that warp terminates, so a single glass path
+           surviving 18 bounces blocks 31 diffuse threads for 13 extra bounces.
+
+           This scene creates heavy variance: diffuse pixels die at bounce 3-5; pixels
+           through one glass sphere bounce 8-12 times; pixels threaded through two
+           glass spheres + the gold sphere can reach 15-20 bounces.
+
+        2. BSDF-EVALUATION COST VARIANCE (shading divergence)
+           The megakernel's raygen evaluates ALL BSDF types in-line.  When a warp has
+           threads on diffuse, dielectric, and full iridescent-Disney surfaces at the
+           same bounce, every thread pays for the most-expensive branch.  Wavefront's
+           plain-CUDA shade kernel has lower register pressure per launch (compiler can
+           see the whole function), and material sorting (next optimisation pass) will
+           let each BSDF type execute as a coherent batch.
+
+        3. RAY COUNT (queue amortisation)
+           1920×1080 = ~2.07 M pixels vs scene.xml's 800×600 = 480 K.  The fixed
+           per-kernel-launch + host-sync overhead (~5 launches + 2-3 syncs per bounce)
+           is the same regardless of ray count.  4× more rays = same overhead amortised
+           over 4× more work.
+
+        NOTE ON FAIR COMPARISON
+           Set SAMPLES_PER_PIXEL = 1 (include/rt_constants.cuh) before timing both
+           modes.  The megakernel traces 5 paths per pixel per frame by default; the
+           wavefront always traces 1.  At unequal SPP you are timing different amounts
+           of work, not the same image quality.  Restore to 5 when done.
+    -->
+
+    <!-- ── BSDFs ─────────────────────────────────────────────────────────────── -->
+
+    <!-- Diffuse: fast-terminating paths (3–5 bounces) -->
+    <bsdf name="whiteDiffuse" type="diffuse" albedoR="0.75" albedoG="0.75" albedoB="0.75" />
+    <bsdf name="redDiffuse"   type="diffuse" albedoR="0.75" albedoG="0.15" albedoB="0.15" />
+    <bsdf name="greenDiffuse" type="diffuse" albedoR="0.15" albedoG="0.75" albedoB="0.15" />
+
+    <!--
+        Three glass IORs: different total-internal-reflection critical angles produce
+        slightly different path-length distributions, spreading active-count decay
+        across more bounce indices rather than all dying at once.
+    -->
+    <bsdf name="glassFloat" type="dielectric" intIOR="1.50" extIOR="1.0" />
+    <bsdf name="glassCrown" type="dielectric" intIOR="1.52" extIOR="1.0" />
+    <bsdf name="glassFlint" type="dielectric" intIOR="1.72" extIOR="1.0" />
+
+    <!--
+        Anisotropic gold Disney: high metallic + anisotropic + clearcoat = the largest
+        per-evaluation cost of any material here.  Its neighbours in the same warp are
+        often diffuse or glass — maximum intra-warp shading divergence.
+    -->
+    <bsdf name="polishedGold" type="disney"
+          base_colorR="1.0" base_colorG="0.78" base_colorB="0.22"
+          roughness="0.08" metallic="1.0" specular="0.5"
+          specular_transmission="0.0" specular_tint="0.0"
+          sheen="0.0" sheen_tint="0.0" subsurface="0.0"
+          anisotropic="0.35" clearcoat="0.5" clearcoat_gloss="1.0"
+          eta="1.5" />
+
+    <!--
+        Iridescent Disney for the horse: all 10 Disney fields active.  Combined with
+        the glass spheres that surround it, this is the highest register-pressure
+        material in the scene — exactly what hurts the megakernel raygen most.
+    -->
+    <bsdf name="iridescent" type="disney"
+          base_colorR="0.65" base_colorG="0.35" base_colorB="0.90"
+          roughness="0.22" metallic="0.35" specular="0.85"
+          specular_transmission="0.05" specular_tint="0.65"
+          sheen="0.55" sheen_tint="0.80" subsurface="0.18"
+          anisotropic="0.12" clearcoat="0.90" clearcoat_gloss="1.0"
+          eta="1.55" />
+
+    <!-- ── Materials ──────────────────────────────────────────────────────────── -->
+    <material name="white"       bsdf="whiteDiffuse" />
+    <material name="red"         bsdf="redDiffuse" />
+    <material name="green"       bsdf="greenDiffuse" />
+    <material name="glassFloatM" bsdf="glassFloat" />
+    <material name="glassCrownM" bsdf="glassCrown" />
+    <material name="glassFlintM" bsdf="glassFlint" />
+    <material name="goldM"       bsdf="polishedGold" />
+    <material name="horseM"      bsdf="iridescent" />
+
+    <!-- ── Cornell box ───────────────────────────────────────────────────────── -->
+    <!--
+        All walls diffuse: these are the fast-terminating surfaces.  A ray that
+        reaches a wall without passing through any glass sphere exits the bounce
+        loop in 3-5 steps.  Roughly 40-50% of pixels see only diffuse surfaces.
+    -->
+    <mesh filename="assets/floor.obj"     material="white" />
+    <mesh filename="assets/walls.obj"     material="white" />
+    <mesh filename="assets/leftwall.obj"  material="red" />
+    <mesh filename="assets/rightwall.obj" material="green" />
+
+    <!-- ── Three ceiling area lights ─────────────────────────────────────────── -->
+    <!--
+        Three emitters at different ceiling X positions.  With a single emitter,
+        every active path does the same NEE query per bounce.  Three spatially
+        separated emitters means different paths draw different NEE samples, so
+        the shadow queue becomes a mix of rays pointing in three different
+        directions — amplifying the connect-stage divergence.
+    -->
+    <mesh filename="assets/light.obj" material="white"
+          isEmitter="true" radianceR="12" radianceG="12" radianceB="12" />
+
+    <mesh filename="assets/light.obj" material="white"
+          isEmitter="true" radianceR="10" radianceG="10" radianceB="14"
+          posX="-0.45" />
+
+    <mesh filename="assets/light.obj" material="white"
+          isEmitter="true" radianceR="10" radianceG="14" radianceB="10"
+          posX="0.45" />
+
+    <!-- ── Glass spheres ─────────────────────────────────────────────────────── -->
+    <!--
+        Placed so that a large fraction of camera rays intersect at least one
+        sphere.  Each sphere adds 3-6 bounces (entry refraction, possible TIR,
+        exit refraction).  Rays threading through two spheres before reaching a
+        diffuse surface accumulate 10-20 total bounces — while the direct-diffuse
+        rays across the scene are already dead.  That gap in active-count is the
+        core wavefront advantage.
+
+        Three different IORs stagger the exact bounce-depth distributions so the
+        active-path count decays smoothly over many bounces instead of in one
+        sharp drop.
+    -->
+    <!-- left-of-centre, slightly forward — intercepts many left-side camera rays -->
+    <mesh filename="assets/sphere1.obj" material="glassFloatM"
+          posX="-0.28" posY="0.02" posZ="0.12" />
+
+    <!-- right-of-centre, moderate depth -->
+    <mesh filename="assets/sphere1.obj" material="glassCrownM"
+          posX="0.28"  posY="0.0"  posZ="-0.22" />
+
+    <!-- centre, near back wall — rays through this sphere must also exit through
+         one of the front spheres on the way back to the camera after a wall bounce -->
+    <mesh filename="assets/sphere2.obj" material="glassFlintM"
+          posX="0.0"   posY="0.05" posZ="-0.58" />
+
+    <!-- ── Gold metallic sphere ───────────────────────────────────────────────── -->
+    <!--
+        Anisotropic Disney metallic in the gap between the glass spheres.  Threads
+        in a warp that hit this sphere evaluate the full Disney BSDF while their
+        neighbours hit diffuse or glass — maximising per-warp shading cost variance
+        and register pressure in the megakernel.
+    -->
+    <mesh filename="assets/sphere2.obj" material="goldM"
+          posX="-0.05" posY="-0.05" posZ="-0.22" />
+
+    <!-- ── Horse (highest BSDF cost) ─────────────────────────────────────────── -->
+    <!--
+        All 10 Disney parameters active.  The horse occupies the centre of the
+        frame, so many camera rays hit it before or after bouncing through the
+        surrounding glass spheres.  Its per-shade cost is high enough to stress the
+        megakernel's register file even in isolation.
+    -->
+    <mesh filename="assets/horse.obj"
+          material="horseM"
+          scaleX="0.4" scaleY="0.4" scaleZ="0.4"
+          rotY="15"
+          posX="0.06" posY="0.37" posZ="-0.10" />
+
+    <!-- ── Camera ────────────────────────────────────────────────────────────── -->
+    <camera
+        eyeX="0.0" eyeY="0.8" eyeZ="2.7"
+        lookAtX="0.0" lookAtY="0.8" lookAtZ="-0.2"
+        upX="0" upY="1" upZ="0"
+        fovY="40"
+    />
+
+    <!-- 1920×1080: 4× more rays than scene.xml, amortising the per-bounce
+         kernel-launch + host-sync overhead across a much larger workload. -->
+    <window width="1920" height="1080" />
+</scene>

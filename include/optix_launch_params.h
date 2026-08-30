@@ -45,9 +45,20 @@ struct LaunchParams {
     CameraData camera;
 
     // ── Acceleration structure + geometry ───────────────────────────
-    OptixTraversableHandle handle;          // top-level traversable (GAS)
+    OptixTraversableHandle handle;          // top-level traversable (IAS)
     const TriangleData*    triangles;        // per-triangle vertex/normal/uv data
     int                    triangleCount;
+
+    // ── Instanced objects ───────────────────────────────────────────
+    // `triangles` holds OBJECT-LOCAL geometry, so anything that reads vertex
+    // positions must first apply the owning object's transform.  Hit programs
+    // recover the flat triangle index as
+    //     objectTriOffset[optixGetInstanceId()] + optixGetPrimitiveIndex()
+    // because each instance has its own GAS with instance-local primitive ids.
+    const int*             objectTriOffset;   // [objectCount + 1]
+    const int*             triangleObjectId;  // [triangleCount] owning object
+    const ObjectTransform* objectTransforms;  // [objectCount] object → world
+    int                    objectCount;
 
     // ── Materials / BSDFs ───────────────────────────────────────────
     const BsdfData* bsdfs;

@@ -12,6 +12,7 @@
 
 // ── GLM ─────────────────────────────────────────────────────────────
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 // ── stb_image / stb_image_write ─────────────────────────────────────
 #define STB_IMAGE_IMPLEMENTATION
@@ -57,6 +58,11 @@ static bool g_sceneChanged  = false;
 static int  g_accumSamples  = 0;   // samples accumulated since last reset
 
 inline void markSceneChanged() { g_sceneChanged = true; }
+
+// Phase-0 IAS validation: press P to spin every instanced object around +Y.
+static bool                          g_spinDemo = false;
+static std::vector<ObjectTransform>  g_initialTransforms;
+static std::vector<ObjectTransform>  g_currentTransforms;
 
 // ── OpenGL objects ──────────────────────────────────────────────────
 static GLuint g_pbo     = 0;   // Pixel Buffer Object (CUDA writes here)
@@ -262,96 +268,70 @@ static void initGL()
 //  Load all triangles from an OBJ via tinyobjloader
 // =====================================================================
 
-static Float3 transformPoint(const Float3& p,
-                               const MeshDesc::TransformDesc& t)
+// Build an OptixInstance-compatible 3x4 row-major transform from the scene
+// XML Euler pose.  Convention matches the old bake path:
+//     p_world = T * Rz * Ry * Rx * S * p_local
+static ObjectTransform objectTransformFromDesc(const MeshDesc::TransformDesc& t)
 {
-    // Apply Scale -> Rx -> Ry -> Rz -> Translate (Euler, degrees).
-    float x = p.x * t.scaleX;
-    float y = p.y * t.scaleY;
-    float z = p.z * t.scaleZ;
+    const glm::mat4 M =
+        glm::translate(glm::mat4(1.0f), glm::vec3(t.posX, t.posY, t.posZ)) *
+        glm::rotate   (glm::mat4(1.0f), glm::radians(t.rotZDegrees), glm::vec3(0, 0, 1)) *
+        glm::rotate   (glm::mat4(1.0f), glm::radians(t.rotYDegrees), glm::vec3(0, 1, 0)) *
+        glm::rotate   (glm::mat4(1.0f), glm::radians(t.rotXDegrees), glm::vec3(1, 0, 0)) *
+        glm::scale    (glm::mat4(1.0f), glm::vec3(t.scaleX, t.scaleY, t.scaleZ));
 
-    const float degToRad = 3.14159265358979323846f / 180.0f;
-    float rx = t.rotXDegrees * degToRad;
-    float ry = t.rotYDegrees * degToRad;
-    float rz = t.rotZDegrees * degToRad;
-
-    // Rx
-    {
-        float cx = std::cos(rx);
-        float sx = std::sin(rx);
-        float y2 = y * cx - z * sx;
-        float z2 = y * sx + z * cx;
-        y = y2;
-        z = z2;
-    }
-
-    // Ry
-    {
-        float cy = std::cos(ry);
-        float sy = std::sin(ry);
-        float x2 = x * cy + z * sy;
-        float z2 = -x * sy + z * cy;
-        x = x2;
-        z = z2;
-    }
-
-    // Rz
-    {
-        float cz = std::cos(rz);
-        float sz = std::sin(rz);
-        float x2 = x * cz - y * sz;
-        float y2 = x * sz + y * cz;
-        x = x2;
-        y = y2;
-    }
-
-    // Translate
-    x += t.posX;
-    y += t.posY;
-    z += t.posZ;
-
-    return {x, y, z};
+    ObjectTransform out{};
+    // GLM is column-major; OptiX wants row-major 3x4.
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c)
+            out.m[r * 4 + c] = M[c][r];
+    return out;
 }
 
-// Like transformPoint but for directions: apply rotations only (no scale, no translation).
-static Float3 transformNormal(const Float3& n,
-                               const MeshDesc::TransformDesc& t)
+static Float3 transformPoint34Host(const ObjectTransform& t, const Float3& p)
 {
-    float x = n.x, y = n.y, z = n.z;
-
-    const float degToRad = 3.14159265358979323846f / 180.0f;
-    float rx = t.rotXDegrees * degToRad;
-    float ry = t.rotYDegrees * degToRad;
-    float rz = t.rotZDegrees * degToRad;
-
-    {
-        float cx = std::cos(rx), sx = std::sin(rx);
-        float y2 = y * cx - z * sx;
-        float z2 = y * sx + z * cx;
-        y = y2; z = z2;
-    }
-    {
-        float cy = std::cos(ry), sy = std::sin(ry);
-        float x2 = x * cy + z * sy;
-        float z2 = -x * sy + z * cy;
-        x = x2; z = z2;
-    }
-    {
-        float cz = std::cos(rz), sz = std::sin(rz);
-        float x2 = x * cz - y * sz;
-        float y2 = x * sz + y * cz;
-        x = x2; y = y2;
-    }
-
-    // Normalize (handles any uniform scale implicitly).
-    float len = std::sqrt(x * x + y * y + z * z);
-    if (len > 1e-8f) { x /= len; y /= len; z /= len; }
-    return {x, y, z};
+    return {
+        t.m[0] * p.x + t.m[1] * p.y + t.m[2]  * p.z + t.m[3],
+        t.m[4] * p.x + t.m[5] * p.y + t.m[6]  * p.z + t.m[7],
+        t.m[8] * p.x + t.m[9] * p.y + t.m[10] * p.z + t.m[11]
+    };
 }
 
-static std::vector<TriangleData> loadTrianglesFromObj(
-    const std::string& path,
-    const MeshDesc::TransformDesc& transform)
+// Compose A * B for two 3x4 affines (row-major), treating each as a 4x4 with
+// bottom row [0 0 0 1].
+static ObjectTransform mulObjectTransform(const ObjectTransform& A,
+                                          const ObjectTransform& B)
+{
+    ObjectTransform C{};
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            C.m[r * 4 + c] =
+                A.m[r * 4 + 0] * B.m[0 * 4 + c] +
+                A.m[r * 4 + 1] * B.m[1 * 4 + c] +
+                A.m[r * 4 + 2] * B.m[2 * 4 + c];
+        }
+        C.m[r * 4 + 3] =
+            A.m[r * 4 + 0] * B.m[3] +
+            A.m[r * 4 + 1] * B.m[7] +
+            A.m[r * 4 + 2] * B.m[11] +
+            A.m[r * 4 + 3];
+    }
+    return C;
+}
+
+static ObjectTransform makeYRotation(float radians)
+{
+    const float c = std::cos(radians);
+    const float s = std::sin(radians);
+    ObjectTransform R = objectTransformIdentity();
+    R.m[0] =  c; R.m[2] = s;
+    R.m[8] = -s; R.m[10] = c;
+    return R;
+}
+
+// Load triangles in OBJECT-LOCAL space. The mesh's pose is applied later as
+// an OptiX instance transform (see cudaInitObjects / IAS).
+static std::vector<TriangleData> loadTrianglesFromObj(const std::string& path)
 {
     tinyobj::attrib_t                attrib;
     std::vector<tinyobj::shape_t>    shapes;
@@ -429,9 +409,9 @@ static std::vector<TriangleData> loadTrianglesFromObj(
             const auto i2 = idx[i + 2];
 
             TriangleData t{};
-            t.v0 = transformPoint(getV(i0.vertex_index), transform);
-            t.v1 = transformPoint(getV(i1.vertex_index), transform);
-            t.v2 = transformPoint(getV(i2.vertex_index), transform);
+            t.v0 = getV(i0.vertex_index);
+            t.v1 = getV(i1.vertex_index);
+            t.v2 = getV(i2.vertex_index);
 
             Float3 rawN0 = getN(i0.normal_index);
             Float3 rawN1 = getN(i1.normal_index);
@@ -439,14 +419,20 @@ static std::vector<TriangleData> loadTrianglesFromObj(
 
             // If any vertex is missing a normal, fall back to the geometric normal
             // for all three vertices so the triangle is consistently flat-shaded.
+            // Normals stay in object-local space; closest-hit transforms them.
             const bool hasNormals = (i0.normal_index >= 0) &&
                                     (i1.normal_index >= 0) &&
                                     (i2.normal_index >= 0) &&
                                     !attrib.normals.empty();
             if (hasNormals) {
-                t.n0 = transformNormal(rawN0, transform);
-                t.n1 = transformNormal(rawN1, transform);
-                t.n2 = transformNormal(rawN2, transform);
+                auto nrm = [](Float3 n) -> Float3 {
+                    float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
+                    if (len > 1e-8f) { n.x /= len; n.y /= len; n.z /= len; }
+                    return n;
+                };
+                t.n0 = nrm(rawN0);
+                t.n1 = nrm(rawN1);
+                t.n2 = nrm(rawN2);
             } else {
                 // Compute geometric normal and use it for all three vertices.
                 const Float3 e1 = { t.v1.x - t.v0.x, t.v1.y - t.v0.y, t.v1.z - t.v0.z };
@@ -557,14 +543,19 @@ static ImageRGBA loadImageRGBA(const std::string& path)
     return img;
 }
 
-static float triangleAreaHost(const TriangleData& t)
+// World-space triangle area under an object transform (for emitter CDFs).
+static float triangleAreaWorldHost(const TriangleData& local, const ObjectTransform& xf)
 {
-    const float ax = t.v1.x - t.v0.x;
-    const float ay = t.v1.y - t.v0.y;
-    const float az = t.v1.z - t.v0.z;
-    const float bx = t.v2.x - t.v0.x;
-    const float by = t.v2.y - t.v0.y;
-    const float bz = t.v2.z - t.v0.z;
+    const Float3 v0 = transformPoint34Host(xf, local.v0);
+    const Float3 v1 = transformPoint34Host(xf, local.v1);
+    const Float3 v2 = transformPoint34Host(xf, local.v2);
+
+    const float ax = v1.x - v0.x;
+    const float ay = v1.y - v0.y;
+    const float az = v1.z - v0.z;
+    const float bx = v2.x - v0.x;
+    const float by = v2.y - v0.y;
+    const float bz = v2.z - v0.z;
 
     const float cx = ay * bz - az * by;
     const float cy = az * bx - ax * bz;
@@ -594,6 +585,22 @@ static void keyCallback(GLFWwindow* window, int key, int /*scancode*/,
     // Toggle the OptiX AI denoiser (off by default).
     if (key == GLFW_KEY_D && action == GLFW_PRESS)
         cudaToggleDenoiser();
+
+    // Phase-0 IAS validation: spin every object around +Y.
+    if (key == GLFW_KEY_P && action == GLFW_PRESS) {
+        g_spinDemo = !g_spinDemo;
+        std::cout << "[demo] Object spin " << (g_spinDemo ? "ON" : "OFF")
+                  << " (press P to toggle)\n";
+        if (!g_spinDemo) {
+            // Restore the initial poses when stopping.
+            g_currentTransforms = g_initialTransforms;
+            if (!g_currentTransforms.empty()) {
+                cudaSetObjectTransforms(g_currentTransforms.data(),
+                                        static_cast<int>(g_currentTransforms.size()));
+                markSceneChanged();
+            }
+        }
+    }
 }
 
 static void framebufferSizeCallback(GLFWwindow* /*window*/, int w, int h)
@@ -609,7 +616,7 @@ int main(int argc, char** argv)
 {
     // ── Scene description (Nori-style) ─────────────────────────────────
     const std::string scenePath =
-        (argc > 1) ? argv[1] : std::string("assets/scene.xml");
+        (argc > 1) ? argv[1] : std::string("assets/scene_wavefront.xml");
     SceneDescription scene = loadSceneDescription(scenePath);
     g_windowWidth  = scene.windowWidth;
     g_windowHeight = scene.windowHeight;
@@ -770,11 +777,13 @@ int main(int argc, char** argv)
     std::vector<int> triangleBsdfIds;
     std::vector<Float3> triangleEmission;
     std::vector<uint8_t> triangleEmitterFlags;
+    std::vector<ObjectDesc> objects;
     triangles.reserve(1024);
     triangleMaterialIds.reserve(1024);
     triangleBsdfIds.reserve(1024);
     triangleEmission.reserve(1024);
     triangleEmitterFlags.reserve(1024);
+    objects.reserve(scene.meshes.size());
 
     // Nori-like emitter list (one emitter per emissive mesh)
     std::vector<EmitterData> emitters;
@@ -785,6 +794,7 @@ int main(int argc, char** argv)
     float sceneEmitterWeightSum = 0.0f;
 
     // Per-triangle emitter flag: set from scene mesh isEmitter (Nori-style).
+    // Geometry stays in object-local space; each mesh becomes one IAS instance.
     for (const auto& mesh : scene.meshes) {
         const int matId = materialIndexOf(mesh.materialName);
         if (matId < 0) {
@@ -793,8 +803,8 @@ int main(int argc, char** argv)
             std::exit(EXIT_FAILURE);
         }
 
-        std::vector<TriangleData> meshTris =
-            loadTrianglesFromObj(mesh.filename, mesh.transform);
+        std::vector<TriangleData> meshTris = loadTrianglesFromObj(mesh.filename);
+        const ObjectTransform objXf = objectTransformFromDesc(mesh.transform);
 
         const int bsdfId = [&]() -> int {
             const auto& mat = scene.materials[static_cast<size_t>(matId)];
@@ -807,14 +817,18 @@ int main(int argc, char** argv)
             return id;
         }();
 
+        ObjectDesc obj{};
+        obj.triOffset = static_cast<int>(triangles.size());
+        obj.triCount  = static_cast<int>(meshTris.size());
+        obj.transform = objXf;
+        objects.push_back(obj);
+
         const Float3 emitColor = { mesh.radianceR, mesh.radianceG, mesh.radianceB };
         // If this mesh is emissive, create an emitter entry backed by its triangles.
-        int emitterIndex = -1;
         int triIndexOffset = 0;
         int cdfOffset = 0;
         float emitterAreaSum = 0.0f;
         if (mesh.isEmitter) {
-            emitterIndex = static_cast<int>(emitters.size());
             triIndexOffset = static_cast<int>(emitterTriIndices.size());
             cdfOffset = static_cast<int>(emitterTriCdf.size());
             emitterTriCdf.push_back(0.0f);
@@ -830,7 +844,8 @@ int main(int argc, char** argv)
                 triangleEmission.push_back(emitColor);
 
                 const int triIdx = static_cast<int>(triangles.size()) - 1;
-                const float a = triangleAreaHost(t);
+                // CDF areas must be in world space (local geometry × transform).
+                const float a = triangleAreaWorldHost(t, objXf);
 
                 // Per-emitter lists
                 emitterTriIndices.push_back(triIdx);
@@ -870,8 +885,17 @@ int main(int argc, char** argv)
                    triangleMaterialIds.data(),
                    g_windowWidth, g_windowHeight);
 
-    // Intersection runs on the RT cores via an OptiX GAS, which cudaInitOptix
-    // builds on-GPU directly from the triangle data uploaded above.
+    // Upload the object table BEFORE cudaInitOptix so it can build one GAS
+    // per object and a top-level IAS over the instance transforms.
+    cudaInitObjects(objects.data(), static_cast<int>(objects.size()));
+    g_initialTransforms.clear();
+    g_currentTransforms.clear();
+    g_initialTransforms.reserve(objects.size());
+    for (const auto& o : objects)
+        g_initialTransforms.push_back(o.transform);
+    g_currentTransforms = g_initialTransforms;
+
+    // Intersection runs on the RT cores via per-object GAS + IAS.
     cudaInitOptix();
 
     cudaInitTriangleEmission(triangleEmission.data(),
@@ -936,9 +960,22 @@ int main(int argc, char** argv)
     double fpsLastTime  = glfwGetTime();
     int    fpsFrameCount = 0;
 
+    std::cout << "[demo] Press P to toggle IAS spin validation\n";
+
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
+
+        // Phase-0 validation: spin every instance around world +Y.
+        if (g_spinDemo && !g_initialTransforms.empty()) {
+            const float angle = static_cast<float>(glfwGetTime()) * 0.7f;
+            const ObjectTransform Ry = makeYRotation(angle);
+            for (size_t i = 0; i < g_initialTransforms.size(); ++i)
+                g_currentTransforms[i] = mulObjectTransform(Ry, g_initialTransforms[i]);
+            cudaSetObjectTransforms(g_currentTransforms.data(),
+                                    static_cast<int>(g_currentTransforms.size()));
+            markSceneChanged();
+        }
 
         // Reset accumulation if the scene/camera changed since the last frame.
         // To trigger this from animation code, call markSceneChanged() anywhere.

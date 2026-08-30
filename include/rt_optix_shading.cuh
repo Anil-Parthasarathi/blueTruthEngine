@@ -100,12 +100,15 @@ static __forceinline__ __device__ bool traceOccluded(OptixTraversableHandle hand
 static __forceinline__ __device__ EmitterSamplingData makeEmitterSampling(const LaunchParams& lp)
 {
     EmitterSamplingData s{};
-    s.triangles         = lp.triangles;
-    s.emitters          = lp.emitters;
-    s.emitterCount      = lp.emitterCount;
-    s.emitterTriIndices = lp.emitterTriIndices;
-    s.emitterTriCdf     = lp.emitterTriCdf;
-    s.sceneEmitterCdf   = lp.sceneEmitterCdf;
+    s.triangles          = lp.triangles;
+    s.emitters           = lp.emitters;
+    s.emitterCount       = lp.emitterCount;
+    s.emitterTriIndices  = lp.emitterTriIndices;
+    s.emitterTriCdf      = lp.emitterTriCdf;
+    s.sceneEmitterCdf    = lp.sceneEmitterCdf;
+    s.triangleObjectId   = lp.triangleObjectId;
+    s.objectTransforms   = lp.objectTransforms;
+    s.objectCount        = lp.objectCount;
     return s;
 }
 

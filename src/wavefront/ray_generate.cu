@@ -76,7 +76,7 @@ __global__ void wfGenerate(
     const int slot = atomicAdd(wf.rayCount, 1);
     wf.rayQueue[slot] = idx;
 
-    (void)px; (void)py; (void)frameIndex;
+
 }
 
 // ---------------------------------------------------------------------------

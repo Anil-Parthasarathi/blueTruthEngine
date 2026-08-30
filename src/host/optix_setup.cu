@@ -1,6 +1,6 @@
 // ============================================================================
 //  optix_setup.cu — OptiX context, module, program groups, pipeline, SBTs,
-//  and the GAS acceleration-structure build.
+//  per-object GAS builds, and the top-level IAS (with update/refit).
 // ============================================================================
 
 #include "renderer_state.h"
@@ -14,6 +14,8 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <vector>
 
 // Embedded PTX arrays (each OptiX .cu is its own module — see CMake).
 extern "C" const char* getOptixPtx();
@@ -22,6 +24,9 @@ extern "C" const char* getWfExtendPtx();
 extern "C" size_t      getWfExtendPtxSize();
 extern "C" const char* getWfShadowPtx();
 extern "C" size_t      getWfShadowPtxSize();
+
+// Rebuild the IAS from scratch every N refits so AABB quality does not drift.
+static constexpr int kIasRebuildInterval = 64;
 
 // ---------------------------------------------------------------------------
 //  OptiX setup helpers
@@ -32,7 +37,7 @@ static void optixLogCallback(unsigned int level, const char* tag, const char* me
 }
 
 // Lazily creates the OptiX context, module, program groups, pipeline and SBT.
-// Scene-independent: called once before the first GAS build.
+// Scene-independent: called once before the first GAS/IAS build.
 void ensureOptixPipeline()
 {
     if (s_optixReady) return;
@@ -54,7 +59,8 @@ void ensureOptixPipeline()
 
     OptixPipelineCompileOptions pipelineCompileOptions = {};
     pipelineCompileOptions.usesMotionBlur                   = 0;
-    pipelineCompileOptions.traversableGraphFlags            = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
+    pipelineCompileOptions.traversableGraphFlags            =
+        OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING;
     pipelineCompileOptions.numPayloadValues                 = 2;
     pipelineCompileOptions.numAttributeValues               = 2;
     pipelineCompileOptions.exceptionFlags                   = OPTIX_EXCEPTION_FLAG_NONE;
@@ -124,8 +130,6 @@ void ensureOptixPipeline()
     OPTIX_CHECK(optixProgramGroupCreate(s_optixContext, &wfShadowDesc, 1, &pgOptions, log, &logSize, &s_pgWfShadow));
 
     // ── Pipeline ────────────────────────────────────────────────────
-    // All raygen programs must be in the pipeline even if not all are used
-    // in every frame — OptiX validates all referenced entry functions at link time.
     OptixProgramGroup groups[] = { s_pgRaygen, s_pgWfExtend, s_pgWfShadow,
                                     s_pgMissRadiance, s_pgMissShadow, s_pgHitRadiance };
 
@@ -145,9 +149,10 @@ void ensureOptixPipeline()
     OPTIX_CHECK(optixUtilComputeStackSizes(&stackSizes,
                                            2 /*maxTraceDepth*/, 0 /*maxCCDepth*/, 0 /*maxDCDepth*/,
                                            &dcFromTraversal, &dcFromState, &contStack));
+    // maxTraversableGraphDepth = 2 for IAS → GAS
     OPTIX_CHECK(optixPipelineSetStackSize(s_optixPipeline,
                                           dcFromTraversal, dcFromState, contStack,
-                                          1 /*maxTraversableGraphDepth (single GAS)*/));
+                                          2 /*maxTraversableGraphDepth*/));
 
     // ── Shader binding table ────────────────────────────────────────
     RayGenSbtRecord rgRecord;
@@ -196,7 +201,6 @@ void ensureOptixPipeline()
     CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(s_d_raygen_wf_shadow), &wfShadowRgRecord,
                           sizeof(RayGenSbtRecord), cudaMemcpyHostToDevice));
 
-    // Copy the megakernel SBT layout then swap only the raygen record.
     s_sbt_wf_extend = s_sbt;
     s_sbt_wf_extend.raygenRecord = s_d_raygen_wf_extend;
 
@@ -206,34 +210,27 @@ void ensureOptixPipeline()
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_launchParams_d), sizeof(LaunchParams)));
 
     s_optixReady = true;
-    fprintf(stdout, "[optix] Pipeline ready (RT-core acceleration enabled)\n");
+    fprintf(stdout, "[optix] Pipeline ready (IAS + per-object GAS)\n");
 }
 
-// Builds the GAS from the uploaded triangle data (s_triangles_d). The GAS uses
-// RT-core hardware; primitive index == triangle index, so all per-triangle
-// arrays continue to work unchanged.
-void buildGAS()
+// ---------------------------------------------------------------------------
+//  Build one GAS over a contiguous triangle range in s_gasVertices_d.
+// ---------------------------------------------------------------------------
+static void buildOneGAS(int triOffset, int triCount,
+                        OptixTraversableHandle& outHandle, CUdeviceptr& outBuffer)
 {
-    if (s_triangleCount <= 0 || !s_triangles_d) return;
+    outHandle = 0;
+    outBuffer = 0;
+    if (triCount <= 0) return;
 
-    const size_t vertexCount = static_cast<size_t>(s_triangleCount) * 3;
-
-    // Pack a contiguous vertex buffer (v0,v1,v2 per triangle) from the
-    // interleaved TriangleData (v0,v1,v2 sit at offset 0 of each struct).
-    if (s_gasVertices_d) { cudaFree(s_gasVertices_d); s_gasVertices_d = nullptr; }
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_gasVertices_d), vertexCount * sizeof(Float3)));
-    CUDA_CHECK(cudaMemcpy2D(s_gasVertices_d, 3 * sizeof(Float3),
-                            s_triangles_d, sizeof(TriangleData),
-                            3 * sizeof(Float3), static_cast<size_t>(s_triangleCount),
-                            cudaMemcpyDeviceToDevice));
-
-    CUdeviceptr d_vertices = reinterpret_cast<CUdeviceptr>(s_gasVertices_d);
+    const unsigned int numVertices = static_cast<unsigned int>(triCount) * 3u;
+    CUdeviceptr d_vertices = reinterpret_cast<CUdeviceptr>(s_gasVertices_d + triOffset * 3);
 
     OptixBuildInput buildInput = {};
     buildInput.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
     buildInput.triangleArray.vertexFormat        = OPTIX_VERTEX_FORMAT_FLOAT3;
     buildInput.triangleArray.vertexStrideInBytes = sizeof(Float3);
-    buildInput.triangleArray.numVertices         = static_cast<unsigned int>(vertexCount);
+    buildInput.triangleArray.numVertices         = numVertices;
     buildInput.triangleArray.vertexBuffers       = &d_vertices;
 
     const unsigned int triangleFlags[1] = { OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT };
@@ -253,7 +250,6 @@ void buildGAS()
     CUdeviceptr d_outputUncompacted = 0;
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_outputUncompacted), bufferSizes.outputSizeInBytes));
 
-    // Request the compacted size via an emit property.
     CUdeviceptr d_compactedSize = 0;
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_compactedSize), sizeof(uint64_t)));
     OptixAccelEmitDesc emitDesc = {};
@@ -271,29 +267,161 @@ void buildGAS()
     CUDA_CHECK(cudaMemcpy(&compactedSize, reinterpret_cast<void*>(d_compactedSize),
                           sizeof(uint64_t), cudaMemcpyDeviceToHost));
 
-    if (s_gasOutputBuffer) { cudaFree(reinterpret_cast<void*>(s_gasOutputBuffer)); s_gasOutputBuffer = 0; }
-
     if (compactedSize > 0 && compactedSize < bufferSizes.outputSizeInBytes) {
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_gasOutputBuffer), compactedSize));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&outBuffer), compactedSize));
         OPTIX_CHECK(optixAccelCompact(s_optixContext, 0, uncompactedHandle,
-                                      s_gasOutputBuffer, compactedSize, &s_gasHandle));
+                                      outBuffer, compactedSize, &outHandle));
         CUDA_CHECK(cudaDeviceSynchronize());
         cudaFree(reinterpret_cast<void*>(d_outputUncompacted));
     } else {
-        s_gasOutputBuffer = d_outputUncompacted;
-        s_gasHandle       = uncompactedHandle;
+        outBuffer = d_outputUncompacted;
+        outHandle = uncompactedHandle;
     }
 
     cudaFree(reinterpret_cast<void*>(d_temp));
     cudaFree(reinterpret_cast<void*>(d_compactedSize));
-
-    fprintf(stdout, "[optix] GAS built from %d triangles (%.2f MB)\n",
-            s_triangleCount, static_cast<double>(compactedSize) / (1024.0 * 1024.0));
 }
 
 // ---------------------------------------------------------------------------
-//  Public API: initialise the OptiX pipeline (once) and build the GAS from
-//  the triangle data uploaded by cudaInitScene.
+//  Build / update the top-level IAS from the current object transforms.
+// ---------------------------------------------------------------------------
+void buildIAS(bool update)
+{
+    if (s_objectCount <= 0 || s_gasHandles.empty()) return;
+
+    // Force a full rebuild periodically — repeated UPDATEs leave the AABBs loose.
+    if (update && s_iasFramesSinceRebuild >= kIasRebuildInterval)
+        update = false;
+
+    std::vector<OptixInstance> instances(static_cast<size_t>(s_objectCount));
+    for (int i = 0; i < s_objectCount; ++i) {
+        OptixInstance& inst = instances[static_cast<size_t>(i)];
+        inst = {};
+        // ObjectTransform is laid out identically to OptixInstance::transform.
+        memcpy(inst.transform, s_objectTransforms_h[static_cast<size_t>(i)].m, sizeof(inst.transform));
+        inst.instanceId        = static_cast<unsigned int>(i);
+        inst.sbtOffset         = 0;
+        inst.visibilityMask    = 255;
+        inst.flags             = OPTIX_INSTANCE_FLAG_NONE;
+        inst.traversableHandle = s_gasHandles[static_cast<size_t>(i)];
+    }
+
+    const size_t instancesBytes = sizeof(OptixInstance) * static_cast<size_t>(s_objectCount);
+    if (!s_instances_d) {
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_instances_d), instancesBytes));
+    }
+    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(s_instances_d), instances.data(),
+                          instancesBytes, cudaMemcpyHostToDevice));
+
+    OptixBuildInput buildInput = {};
+    buildInput.type                       = OPTIX_BUILD_INPUT_TYPE_INSTANCES;
+    buildInput.instanceArray.instances    = s_instances_d;
+    buildInput.instanceArray.numInstances = static_cast<unsigned int>(s_objectCount);
+
+    OptixAccelBuildOptions accelOptions = {};
+    accelOptions.buildFlags = OPTIX_BUILD_FLAG_ALLOW_UPDATE | OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
+    accelOptions.operation  = update ? OPTIX_BUILD_OPERATION_UPDATE
+                                     : OPTIX_BUILD_OPERATION_BUILD;
+
+    OptixAccelBufferSizes bufferSizes = {};
+    OPTIX_CHECK(optixAccelComputeMemoryUsage(s_optixContext, &accelOptions, &buildInput, 1, &bufferSizes));
+
+    if (!update) {
+        // Full rebuild — (re)allocate output / temp for the new size.
+        if (s_iasOutputBuffer) { cudaFree(reinterpret_cast<void*>(s_iasOutputBuffer)); s_iasOutputBuffer = 0; }
+        if (s_iasTempBuffer)   { cudaFree(reinterpret_cast<void*>(s_iasTempBuffer));   s_iasTempBuffer = 0; }
+
+        s_iasOutputSize = bufferSizes.outputSizeInBytes;
+        s_iasTempSize   = bufferSizes.tempSizeInBytes;
+        // UPDATE needs tempUpdateSizeInBytes; keep the larger of the two.
+        if (bufferSizes.tempUpdateSizeInBytes > s_iasTempSize)
+            s_iasTempSize = bufferSizes.tempUpdateSizeInBytes;
+
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_iasOutputBuffer), s_iasOutputSize));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_iasTempBuffer),   s_iasTempSize));
+
+        OPTIX_CHECK(optixAccelBuild(s_optixContext, 0 /*stream*/, &accelOptions, &buildInput, 1,
+                                    s_iasTempBuffer, s_iasTempSize,
+                                    s_iasOutputBuffer, s_iasOutputSize,
+                                    &s_iasHandle, nullptr, 0));
+        CUDA_CHECK(cudaDeviceSynchronize());
+        s_iasFramesSinceRebuild = 0;
+        fprintf(stdout, "[optix] IAS built (%d instances, %.2f KB)\n",
+                s_objectCount, static_cast<double>(s_iasOutputSize) / 1024.0);
+    } else {
+        // Refit — reuse existing buffers. tempUpdateSizeInBytes can exceed the
+        // original tempSizeInBytes, so grow if needed.
+        if (bufferSizes.tempUpdateSizeInBytes > s_iasTempSize) {
+            cudaFree(reinterpret_cast<void*>(s_iasTempBuffer));
+            s_iasTempSize = bufferSizes.tempUpdateSizeInBytes;
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_iasTempBuffer), s_iasTempSize));
+        }
+
+        OPTIX_CHECK(optixAccelBuild(s_optixContext, 0 /*stream*/, &accelOptions, &buildInput, 1,
+                                    s_iasTempBuffer, s_iasTempSize,
+                                    s_iasOutputBuffer, s_iasOutputSize,
+                                    &s_iasHandle, nullptr, 0));
+        CUDA_CHECK(cudaDeviceSynchronize());
+        ++s_iasFramesSinceRebuild;
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Build per-object GAS from s_triangles_d, then the top-level IAS.
+//  Requires cudaInitObjects() (or synthesises a single identity object).
+// ---------------------------------------------------------------------------
+void buildGAS()
+{
+    if (s_triangleCount <= 0 || !s_triangles_d) return;
+
+    // If the host never called cudaInitObjects, synthesise one identity object
+    // covering the entire triangle array so a static scene still works.
+    if (s_objectCount <= 0) {
+        ObjectDesc obj{};
+        obj.triOffset = 0;
+        obj.triCount  = s_triangleCount;
+        obj.transform = objectTransformIdentity();
+        cudaInitObjects(&obj, 1);
+    }
+
+    // Pack a contiguous vertex buffer (v0,v1,v2 per triangle) from the
+    // interleaved TriangleData (v0,v1,v2 sit at offset 0 of each struct).
+    const size_t vertexCount = static_cast<size_t>(s_triangleCount) * 3;
+    if (s_gasVertices_d) { cudaFree(s_gasVertices_d); s_gasVertices_d = nullptr; }
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&s_gasVertices_d), vertexCount * sizeof(Float3)));
+    CUDA_CHECK(cudaMemcpy2D(s_gasVertices_d, 3 * sizeof(Float3),
+                            s_triangles_d, sizeof(TriangleData),
+                            3 * sizeof(Float3), static_cast<size_t>(s_triangleCount),
+                            cudaMemcpyDeviceToDevice));
+
+    // Tear down any previous per-object GAS.
+    for (CUdeviceptr buf : s_gasBuffers)
+        if (buf) cudaFree(reinterpret_cast<void*>(buf));
+    s_gasBuffers.clear();
+    s_gasHandles.clear();
+    s_gasHandles.resize(static_cast<size_t>(s_objectCount), 0);
+    s_gasBuffers.resize(static_cast<size_t>(s_objectCount), 0);
+
+    for (int i = 0; i < s_objectCount; ++i) {
+        const ObjectDesc& obj = s_objects_h[static_cast<size_t>(i)];
+        buildOneGAS(obj.triOffset, obj.triCount,
+                    s_gasHandles[static_cast<size_t>(i)],
+                    s_gasBuffers[static_cast<size_t>(i)]);
+    }
+
+    fprintf(stdout, "[optix] Built %d per-object GAS from %d triangles\n",
+            s_objectCount, s_triangleCount);
+
+    // Fresh IAS (full build).
+    if (s_iasOutputBuffer) { cudaFree(reinterpret_cast<void*>(s_iasOutputBuffer)); s_iasOutputBuffer = 0; }
+    if (s_iasTempBuffer)   { cudaFree(reinterpret_cast<void*>(s_iasTempBuffer));   s_iasTempBuffer = 0; }
+    s_iasHandle = 0;
+    s_iasFramesSinceRebuild = kIasRebuildInterval; // force rebuild path
+    buildIAS(false);
+}
+
+// ---------------------------------------------------------------------------
+//  Public API: initialise the OptiX pipeline (once) and build GAS + IAS.
 // ---------------------------------------------------------------------------
 void cudaInitOptix()
 {
@@ -310,9 +438,20 @@ void freeOptixState()
     if (s_sbt.missRecordBase)    { cudaFree(reinterpret_cast<void*>(s_sbt.missRecordBase));    s_sbt.missRecordBase = 0; }
     if (s_sbt.hitgroupRecordBase){ cudaFree(reinterpret_cast<void*>(s_sbt.hitgroupRecordBase)); s_sbt.hitgroupRecordBase = 0; }
     if (s_launchParams_d)        { cudaFree(s_launchParams_d); s_launchParams_d = nullptr; }
-    if (s_gasOutputBuffer)       { cudaFree(reinterpret_cast<void*>(s_gasOutputBuffer)); s_gasOutputBuffer = 0; }
-    if (s_gasVertices_d)         { cudaFree(s_gasVertices_d); s_gasVertices_d = nullptr; }
-    s_gasHandle = 0;
+
+    if (s_iasOutputBuffer) { cudaFree(reinterpret_cast<void*>(s_iasOutputBuffer)); s_iasOutputBuffer = 0; }
+    if (s_iasTempBuffer)   { cudaFree(reinterpret_cast<void*>(s_iasTempBuffer));   s_iasTempBuffer = 0; }
+    if (s_instances_d)     { cudaFree(reinterpret_cast<void*>(s_instances_d));     s_instances_d = 0; }
+    s_iasHandle = 0;
+    s_iasTempSize = 0;
+    s_iasOutputSize = 0;
+    s_iasFramesSinceRebuild = 0;
+
+    for (CUdeviceptr buf : s_gasBuffers)
+        if (buf) cudaFree(reinterpret_cast<void*>(buf));
+    s_gasBuffers.clear();
+    s_gasHandles.clear();
+    if (s_gasVertices_d) { cudaFree(s_gasVertices_d); s_gasVertices_d = nullptr; }
 
     // ── Wavefront SBT records and program groups ────────────────────
     if (s_d_raygen_wf_extend) { cudaFree(reinterpret_cast<void*>(s_d_raygen_wf_extend)); s_d_raygen_wf_extend = 0; }

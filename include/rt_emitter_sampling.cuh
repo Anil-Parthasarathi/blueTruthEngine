@@ -22,12 +22,18 @@ struct EmitterQueryRecord {
 };
 
 struct EmitterSamplingData {
-    const TriangleData* triangles;
+    const TriangleData* triangles;          // object-local geometry
     const EmitterData* emitters;
     int emitterCount;
     const int* emitterTriIndices;
     const float* emitterTriCdf;
     const float* sceneEmitterCdf;
+    // Instancing: map a flat triangle index to its object's world transform.
+    // Area CDFs are stored in world-space units (computed at load), so the
+    // PDF stays valid under rigid motion. Scale changes are not supported.
+    const int*             triangleObjectId;
+    const ObjectTransform* objectTransforms;
+    int                    objectCount;
 };
 
 __device__ __forceinline__ int sampleCdfReuse(
@@ -69,7 +75,10 @@ __device__ __forceinline__ MeshSample sampleMeshEmitter(
     const int* emitterTriangleIndices,
     const float* emitterTriangleCdf,
     int emitterTriangleCount,
-    float u0, float u1)
+    float u0, float u1,
+    const int* triangleObjectId,
+    const ObjectTransform* objectTransforms,
+    int objectCount)
 {
     MeshSample result{};
     result.position = {0.0f, 0.0f, 0.0f};
@@ -89,8 +98,23 @@ __device__ __forceinline__ MeshSample sampleMeshEmitter(
     float beta  = u1 * rootTerm;
     float gamma = 1.0f - alpha - beta;
 
-    result.position = add3(add3(mul3(tri.v0, alpha), mul3(tri.v1, beta)), mul3(tri.v2, gamma));
-    result.normal = normalize3(cross3(sub3(tri.v1, tri.v0), sub3(tri.v2, tri.v0)));
+    // Sample in object-local space, then transform to world so NEE rays aim
+    // at the instance's current pose. Transforming the three vertices and
+    // taking the cross product gives a correct world normal under any affine
+    // transform (including non-uniform scale).
+    Float3 p0 = tri.v0, p1 = tri.v1, p2 = tri.v2;
+    if (objectTransforms && triangleObjectId && objectCount > 0) {
+        const int objId = triangleObjectId[triIdx];
+        if (objId >= 0 && objId < objectCount) {
+            const ObjectTransform& xf = objectTransforms[objId];
+            p0 = transformPoint34(xf, tri.v0);
+            p1 = transformPoint34(xf, tri.v1);
+            p2 = transformPoint34(xf, tri.v2);
+        }
+    }
+
+    result.position = add3(add3(mul3(p0, alpha), mul3(p1, beta)), mul3(p2, gamma));
+    result.normal = normalize3(cross3(sub3(p1, p0), sub3(p2, p0)));
 
     const float totalArea = emitterTriangleCdf[emitterTriangleCount];
     if (totalArea > 0.0f) result.pdf = 1.0f / totalArea;
@@ -218,7 +242,10 @@ __device__ __forceinline__ RandomEmitterSample sampleRandomEmitter(
         sampling.emitterTriIndices + e.triIndexOffset,
         sampling.emitterTriCdf + e.cdfOffset,
         e.triCount,
-        u0, u1);
+        u0, u1,
+        sampling.triangleObjectId,
+        sampling.objectTransforms,
+        sampling.objectCount);
 
     return out;
 }
