@@ -197,31 +197,39 @@ void cudaInitSpotlights(const SpotlightData* spotlights, int spotlightCount)
                           cudaMemcpyHostToDevice));
 }
 
-void cudaInitTextures(const uint8_t* const* pixels,
+namespace {
+
+void destroyTextureSet(std::vector<cudaTextureObject_t>& handlesH,
+                       std::vector<cudaArray_t>& arrays,
+                       cudaTextureObject_t*& handlesD)
+{
+    for (auto& texObj : handlesH) if (texObj) cudaDestroyTextureObject(texObj);
+    for (auto& arr : arrays)        if (arr)    cudaFreeArray(arr);
+    handlesH.clear();
+    arrays.clear();
+    if (handlesD) { cudaFree(handlesD); handlesD = nullptr; }
+}
+
+void uploadTextureSet(const uint8_t* const* pixels,
                       const int* widths,
                       const int* heights,
-                      int textureCount)
+                      int textureCount,
+                      std::vector<cudaArray_t>& arrays,
+                      std::vector<cudaTextureObject_t>& handlesH,
+                      cudaTextureObject_t*& handlesD,
+                      const char* logLabel)
 {
-    // Release any previously uploaded textures.
-    for (auto& texObj : s_texObjects_h) if (texObj) cudaDestroyTextureObject(texObj);
-    for (auto& arr : s_cuArrays)        if (arr)    cudaFreeArray(arr);
-    s_texObjects_h.clear();
-    s_cuArrays.clear();
-    if (s_texObjects_d) { cudaFree(s_texObjects_d); s_texObjects_d = nullptr; }
-    s_textureCount = 0;
+    destroyTextureSet(handlesH, arrays, handlesD);
 
     if (!pixels || textureCount <= 0) return;
 
-    s_cuArrays.resize(static_cast<size_t>(textureCount), nullptr);
-    s_texObjects_h.resize(static_cast<size_t>(textureCount), 0);
+    arrays.resize(static_cast<size_t>(textureCount), nullptr);
+    handlesH.resize(static_cast<size_t>(textureCount), 0);
 
     for (int i = 0; i < textureCount; ++i) {
-        // nullptr means this material has no texture — leave the handle as 0.
-        // The kernel checks texObj != 0 before sampling, so the BSDF's own
-        // base_color / albedo parameters are used unchanged.
         if (!pixels[i]) {
-            s_cuArrays[static_cast<size_t>(i)]     = nullptr;
-            s_texObjects_h[static_cast<size_t>(i)] = 0;
+            arrays[static_cast<size_t>(i)]   = nullptr;
+            handlesH[static_cast<size_t>(i)] = 0;
             continue;
         }
 
@@ -229,23 +237,19 @@ void cudaInitTextures(const uint8_t* const* pixels,
         const int w = widths[i];
         const int h = heights[i];
 
-        // Allocate a 2-D CUDA array (RGBA8 per texel).
         const cudaChannelFormatDesc desc = cudaCreateChannelDesc<uchar4>();
-        CUDA_CHECK(cudaMallocArray(&s_cuArrays[static_cast<size_t>(i)], &desc,
+        CUDA_CHECK(cudaMallocArray(&arrays[static_cast<size_t>(i)], &desc,
                                    static_cast<size_t>(w), static_cast<size_t>(h)));
 
-        // Copy host pixels into the CUDA array (row-major, 4 bytes per pixel).
         CUDA_CHECK(cudaMemcpy2DToArray(
-            s_cuArrays[static_cast<size_t>(i)], 0, 0,
+            arrays[static_cast<size_t>(i)], 0, 0,
             srcPixels, static_cast<size_t>(w) * 4,
             static_cast<size_t>(w) * 4, static_cast<size_t>(h),
             cudaMemcpyHostToDevice));
 
-        // Create a texture object with bilinear filtering, UV wrap, normalised coords.
-        // readMode = NormalizedFloat converts uchar4 → float4 in [0,1] automatically.
         cudaResourceDesc resDesc{};
         resDesc.resType         = cudaResourceTypeArray;
-        resDesc.res.array.array = s_cuArrays[static_cast<size_t>(i)];
+        resDesc.res.array.array = arrays[static_cast<size_t>(i)];
 
         cudaTextureDesc texDesc{};
         texDesc.addressMode[0]   = cudaAddressModeWrap;
@@ -255,19 +259,37 @@ void cudaInitTextures(const uint8_t* const* pixels,
         texDesc.normalizedCoords = 1;
 
         CUDA_CHECK(cudaCreateTextureObject(
-            &s_texObjects_h[static_cast<size_t>(i)], &resDesc, &texDesc, nullptr));
+            &handlesH[static_cast<size_t>(i)], &resDesc, &texDesc, nullptr));
 
-        fprintf(stdout, "[texture] Uploaded material %d: %d×%d\n", i, w, h);
+        fprintf(stdout, "[texture] Uploaded %s %d: %d×%d\n", logLabel, i, w, h);
     }
 
-    s_textureCount = textureCount;
-
-    // Copy the array of texture-object handles to the device so the kernel can index them.
-    CUDA_CHECK(cudaMalloc(&s_texObjects_d,
+    CUDA_CHECK(cudaMalloc(&handlesD,
                           sizeof(cudaTextureObject_t) * static_cast<size_t>(textureCount)));
-    CUDA_CHECK(cudaMemcpy(s_texObjects_d, s_texObjects_h.data(),
+    CUDA_CHECK(cudaMemcpy(handlesD, handlesH.data(),
                           sizeof(cudaTextureObject_t) * static_cast<size_t>(textureCount),
                           cudaMemcpyHostToDevice));
+}
+
+} // namespace
+
+void cudaInitTextures(const uint8_t* const* pixels,
+                      const int* widths,
+                      const int* heights,
+                      int textureCount)
+{
+    uploadTextureSet(pixels, widths, heights, textureCount,
+                     s_cuArrays, s_texObjects_h, s_texObjects_d, "albedo");
+    s_textureCount = (pixels && textureCount > 0) ? textureCount : 0;
+}
+
+void cudaInitMrTextures(const uint8_t* const* pixels,
+                        const int* widths,
+                        const int* heights,
+                        int textureCount)
+{
+    uploadTextureSet(pixels, widths, heights, textureCount,
+                     s_cuArraysMr, s_texObjectsMr_h, s_texObjectsMr_d, "mr");
 }
 
 // ---------------------------------------------------------------------------
@@ -334,11 +356,8 @@ void freeSceneUploads()
     }
     s_spotlightCount = 0;
 
-    for (auto& texObj : s_texObjects_h) if (texObj) cudaDestroyTextureObject(texObj);
-    for (auto& arr : s_cuArrays)        if (arr)    cudaFreeArray(arr);
-    s_texObjects_h.clear();
-    s_cuArrays.clear();
-    if (s_texObjects_d) { cudaFree(s_texObjects_d); s_texObjects_d = nullptr; }
+    destroyTextureSet(s_texObjects_h, s_cuArrays, s_texObjects_d);
+    destroyTextureSet(s_texObjectsMr_h, s_cuArraysMr, s_texObjectsMr_d);
     s_textureCount = 0;
 }
 

@@ -118,6 +118,7 @@ static __forceinline__ __device__ DirectLightingContext makeDirectLightingContex
     ctx.spotlights           = lp.spotlights;
     ctx.spotlightCount       = lp.spotlightCount;
     ctx.texObjects           = lp.texObjects;
+    ctx.texObjectsMr         = lp.texObjectsMr;
     ctx.triangleMaterialIds  = lp.triangleMaterialIds;
     ctx.textureCount         = lp.textureCount;
     ctx.envMap               = lp.envMap;

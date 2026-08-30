@@ -71,6 +71,11 @@ target_include_directories(tinyobjloader INTERFACE
     ${CMAKE_SOURCE_DIR}/external/tinyobjloader
 )
 
+add_library(tinygltf INTERFACE)
+target_include_directories(tinygltf INTERFACE
+    ${CMAKE_SOURCE_DIR}/external/tinygltf
+)
+
 # ── OptiX device programs → PTX → embedded byte arrays ───────────────
 # Each OptiX .cu file is compiled to PTX in its own OBJECT library, then
 # embedded into a separate C array via bin2c.  OptiX loads each array as
@@ -130,6 +135,7 @@ add_executable(${PROJECT_NAME}
     src/main.cpp
     src/render_kernel.cu           # public API + per-frame dispatch
     src/scene.cpp
+    src/gltf_loader.cpp
     src/optix_ptx_embed.cpp
     src/host/renderer_state.cu     # shared s_* renderer state (single definition)
     src/host/optix_setup.cu        # OptiX pipeline / SBTs / GAS build
@@ -161,6 +167,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     glm::glm
     stb
     tinyobjloader
+    tinygltf
     opengl32          # Windows OpenGL
 )
 

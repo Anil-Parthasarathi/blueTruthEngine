@@ -138,6 +138,7 @@ static WfSceneView buildSceneView(int frameIndex)
     sv.spotlights            = s_spotlights_d;
     sv.spotlightCount        = s_spotlightCount;
     sv.texObjects            = s_texObjects_d;
+    sv.texObjectsMr          = s_texObjectsMr_d;
     sv.textureCount          = s_textureCount;
     sv.envMap                = s_envMap_h;
     sv.hasEnvMap             = s_hasEnvMap;

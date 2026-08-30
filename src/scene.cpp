@@ -205,8 +205,6 @@ SceneDescription loadSceneDescription(const std::string& path)
             m.filename    = extractAttributeFromTag(tagContent, "filename");
             m.materialName = extractAttributeFromTag(tagContent, "material");
 
-            // Optional transform attributes.
-            // If not provided, MeshDesc keeps default identity transform.
             auto readF = [&](const char* attrName, float& out) {
                 std::string s = extractAttributeFromTag(tagContent, attrName);
                 if (s.empty()) return;
@@ -271,6 +269,50 @@ SceneDescription loadSceneDescription(const std::string& path)
             }
 
             desc.meshes.push_back(m);
+        }
+    }
+
+    // --- Models (glTF / GLB drop-ins) --------------------------------------
+    {
+        size_t searchFrom = 0;
+        while (true) {
+            std::string tagContent;
+            if (!extractNextTag(xml, "model", searchFrom, tagContent))
+                break;
+
+            ModelDesc m;
+            m.filename = extractAttributeFromTag(tagContent, "filename");
+
+            auto readF = [&](const char* attrName, float& out) {
+                std::string s = extractAttributeFromTag(tagContent, attrName);
+                if (s.empty()) return;
+                try {
+                    out = std::stof(s);
+                } catch (...) {
+                    std::cerr << "[scene] <model filename=\"" << m.filename
+                              << "\"> invalid float attribute `" << attrName
+                              << "`: \"" << s << "\"\n";
+                    std::exit(EXIT_FAILURE);
+                }
+            };
+
+            readF("posX", m.transform.posX);
+            readF("posY", m.transform.posY);
+            readF("posZ", m.transform.posZ);
+            readF("rotX", m.transform.rotXDegrees);
+            readF("rotY", m.transform.rotYDegrees);
+            readF("rotZ", m.transform.rotZDegrees);
+            readF("scaleX", m.transform.scaleX);
+            readF("scaleY", m.transform.scaleY);
+            readF("scaleZ", m.transform.scaleZ);
+
+            if (m.filename.empty()) {
+                std::cerr << "[scene] <model> missing required attribute "
+                             "`filename` in \"" << path << "\".\n";
+                std::exit(EXIT_FAILURE);
+            }
+
+            desc.models.push_back(m);
         }
     }
 
@@ -453,24 +495,25 @@ SceneDescription loadSceneDescription(const std::string& path)
         desc.camera.fovYDegrees = readF("fovY");
     }
 
-    if (desc.meshes.empty()) {
-        std::cerr << "[scene] No <mesh ...> elements found in \"" << path
-                  << "\". Please add at least one mesh.\n";
+    if (desc.meshes.empty() && desc.models.empty()) {
+        std::cerr << "[scene] No <mesh> or <model> elements found in \"" << path
+                  << "\". Please add at least one.\n";
         std::exit(EXIT_FAILURE);
     }
-    if (desc.materials.empty()) {
+    if (!desc.meshes.empty() && desc.materials.empty()) {
         std::cerr << "[scene] No <material ...> elements found in \"" << path
-                  << "\". Please add at least one material.\n";
+                  << "\". OBJ <mesh> entries require materials.\n";
         std::exit(EXIT_FAILURE);
     }
-    if (desc.bsdfs.empty()) {
+    if (!desc.meshes.empty() && desc.bsdfs.empty()) {
         std::cerr << "[scene] No <bsdf ...> elements found in \"" << path
-                  << "\". Please add at least one bsdf.\n";
+                  << "\". OBJ <mesh> entries require BSDFs.\n";
         std::exit(EXIT_FAILURE);
     }
 
     std::cout << "[scene] Loaded scene from \"" << path << "\"\n";
     std::cout << "        meshes    = " << desc.meshes.size()    << "\n";
+    std::cout << "        models    = " << desc.models.size()    << "\n";
     std::cout << "        materials = " << desc.materials.size() << "\n";
     std::cout << "        emitters  = " << desc.emitters.size()  << "\n";
     std::cout << "        window    = " << desc.windowWidth << " x "

@@ -6,6 +6,22 @@
 // High-level scene description, inspired by Nori but kept minimal and
 // engine-agnostic so it can evolve (meshes, materials, emitters, BRDFs, …).
 
+// Optional transform for placing a mesh or glTF model in world space.
+// Rotation is Euler angles in degrees, applied as Scale -> Rx -> Ry -> Rz -> Translate.
+struct TransformDesc {
+    float posX = 0.0f;
+    float posY = 0.0f;
+    float posZ = 0.0f;
+
+    float rotXDegrees = 0.0f;
+    float rotYDegrees = 0.0f;
+    float rotZDegrees = 0.0f;
+
+    float scaleX = 1.0f;
+    float scaleY = 1.0f;
+    float scaleZ = 1.0f;
+};
+
 struct MeshDesc {
     std::string filename;
     std::string materialName; // name of a <material> entry
@@ -16,21 +32,14 @@ struct MeshDesc {
     float radianceG = 0.0f;
     float radianceB = 0.0f;
 
-    // Optional transform for placing this mesh in world/scene space.
-    // Rotation is Euler angles in degrees, applied as Scale -> Rx -> Ry -> Rz -> Translate.
-    struct TransformDesc {
-        float posX = 0.0f;
-        float posY = 0.0f;
-        float posZ = 0.0f;
+    TransformDesc transform;
+};
 
-        float rotXDegrees = 0.0f;
-        float rotYDegrees = 0.0f;
-        float rotZDegrees = 0.0f;
-
-        float scaleX = 1.0f;
-        float scaleY = 1.0f;
-        float scaleZ = 1.0f;
-    } transform;
+// Drop-in glTF 2.0 / GLB asset. Materials, textures, and submeshes come from
+// the file and are mapped to Disney BSDFs — no XML <material> required.
+struct ModelDesc {
+    std::string filename;
+    TransformDesc transform;
 };
 
 struct MaterialDesc {
@@ -113,6 +122,7 @@ struct CameraDesc {
 struct SceneDescription {
     // Core
     std::vector<MeshDesc>      meshes;
+    std::vector<ModelDesc>     models;     // <model> glTF / GLB drop-ins
     std::vector<MaterialDesc>  materials;
     std::vector<BsdfDesc>      bsdfs;
     std::vector<EmitterDesc>   emitters;

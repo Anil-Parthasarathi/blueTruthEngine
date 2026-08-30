@@ -157,6 +157,14 @@ void cudaInitTextures(const uint8_t* const* pixels,
                       const int* heights,
                       int textureCount);
 
+/// Optional metallic-roughness maps, same indexing as cudaInitTextures.
+/// glTF packs roughness in G and metallic in B.  Pass nullptr entries for
+/// materials that have no MR map.  Re-calling replaces the previous MR set.
+void cudaInitMrTextures(const uint8_t* const* pixels,
+                        const int* widths,
+                        const int* heights,
+                        int textureCount);
+
 /// Upload an HDRI environment map for image-based lighting.
 /// `hdriPixelsRGBA` is a flat array of W×H float4 (RGBA) pixels in row-major order.
 /// `intensity` scales the radiance; `rotationDeg` rotates the map around Y in degrees.

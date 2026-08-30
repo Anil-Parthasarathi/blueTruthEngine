@@ -72,6 +72,7 @@ struct LaunchParams {
 
     // ── Textures (one CUDA texture object handle per material) ───────
     const cudaTextureObject_t* texObjects;
+    const cudaTextureObject_t* texObjectsMr; // metallic-roughness (G=rough, B=metal)
     int                        textureCount;
 
     // ── Environment map (HDRI IBL) ──────────────────────────────────

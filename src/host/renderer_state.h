@@ -77,6 +77,10 @@ extern std::vector<cudaTextureObject_t> s_texObjects_h;  // texture object handl
 extern cudaTextureObject_t*             s_texObjects_d;  // device array of handles
 extern int                              s_textureCount;
 
+extern std::vector<cudaArray_t>         s_cuArraysMr;
+extern std::vector<cudaTextureObject_t> s_texObjectsMr_h;
+extern cudaTextureObject_t*             s_texObjectsMr_d;
+
 // ── Environment map (HDRI IBL) ──────────────────────────────────────
 extern EnvMapData    s_envMap_h;              // host-side copy (pointers are device)
 extern bool          s_hasEnvMap;
