@@ -27,9 +27,9 @@
 //      shadow rays from the same bounce were resolved, silently dropping
 //      direct lighting.  With one path per pixel per frame, the style channels
 //      are final once the loop exits, and accumulate Welford-blends them.
-//    • The outline stage runs BETWEEN extend and shade, because shade consumes
-//      wf.edgeFactor as a throughput modulation, and it needs the centre hit
-//      that extend just resolved.
+//    • The outline stage runs BETWEEN extend and shade: it classifies probes
+//      against the centre hit extend just resolved, and max-accumulates
+//      coverage into wf.edgeFactor for present-time ink.
 //    • Stylization is confined to present, which runs on converged data.  The
 //      photorealistic path is unchanged: the outline launch is skipped, the
 //      channel pointers all alias the one accumulation buffer, and present
@@ -259,7 +259,7 @@ void cudaRenderWavefront(uint32_t* devPtr, int imageWidth, int imageHeight)
     // Fills every path slot and the current ray queue (rayQueue/rayCount).
     CUDA_CHECK(cudaMemcpy(wf.rayCount, &zero, sizeof(int), cudaMemcpyHostToDevice));
     launchWfGenerate(wf, s_camera_h, imageWidth, imageHeight, s_frameIndex);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_STAGE_CHECK("wfGenerate");
 
     // ── Bounce loop (shared cap with the megakernel) ────────────────────
     for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce) {
@@ -281,14 +281,15 @@ void cudaRenderWavefront(uint32_t* devPtr, int imageWidth, int imageHeight)
                                     reinterpret_cast<CUdeviceptr>(s_launchParams_d),
                                     sizeof(LaunchParams), &s_sbt_wf_extend,
                                     static_cast<unsigned int>(activeCount), 1, 1));
-            CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_STAGE_CHECK("wfExtend");
         }
 
         // ── Stage 2b: Outline probes (anime only) ────────────────────────
         // Skipped entirely in physical mode — not a device branch, an absent
         // launch — so the photorealistic path pays literally nothing.  Runs
-        // after extend because it classifies probes against the centre hit,
-        // and before shade because shade folds edgeFactor into throughput.
+        // after extend because it classifies probes against the centre hit.
+        // Coverage is max-accumulated for present-time ink; shade does not
+        // consume it.
         if (anime && s_pgWfOutline) {
             LaunchParams lp = {};
             lp.handle            = s_gasHandle;
@@ -306,7 +307,7 @@ void cudaRenderWavefront(uint32_t* devPtr, int imageWidth, int imageHeight)
                                     reinterpret_cast<CUdeviceptr>(s_launchParams_d),
                                     sizeof(LaunchParams), &s_sbt_wf_outline,
                                     static_cast<unsigned int>(activeCount), 1, 1));
-            CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_STAGE_CHECK("wfOutline");
         }
 
         // Reset the NEXT-bounce queue and this bounce's shadow counter;
@@ -317,11 +318,16 @@ void cudaRenderWavefront(uint32_t* devPtr, int imageWidth, int imageHeight)
 
         // ── Stage 3: Shade ───────────────────────────────────────────────
         launchWfShade(wf, sv, activeCount);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_STAGE_CHECK("wfShade");
 
         // ── Stage 4: Connect shadow rays ─────────────────────────────────
         int shadowCount = 0;
         CUDA_CHECK(cudaMemcpy(&shadowCount, wf.shadowCount, sizeof(int), cudaMemcpyDeviceToHost));
+        if (shadowCount > wf.maxShadows) {
+            fprintf(stderr, "[wavefront] shadowCount %d exceeds maxShadows %d — clamping\n",
+                    shadowCount, wf.maxShadows);
+            shadowCount = wf.maxShadows;
+        }
         if (shadowCount > 0) {
             LaunchParams lp = {};
             lp.handle = s_gasHandle;
@@ -332,7 +338,7 @@ void cudaRenderWavefront(uint32_t* devPtr, int imageWidth, int imageHeight)
                                     reinterpret_cast<CUdeviceptr>(s_launchParams_d),
                                     sizeof(LaunchParams), &s_sbt_wf_shadow,
                                     static_cast<unsigned int>(shadowCount), 1, 1));
-            CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_STAGE_CHECK("wfConnect");
         }
 
         // ── Ping-pong: next bounce reads what shade just wrote ──────────
@@ -345,14 +351,14 @@ void cudaRenderWavefront(uint32_t* devPtr, int imageWidth, int imageHeight)
     // landed in the style channels.  Welford-blend them into the persistent
     // accumulators.
     launchWfAccumulate(wf, sv);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_STAGE_CHECK("wfAccumulate");
 
     // ── Stage 6: Denoise, then present ──────────────────────────────────
     if (!anime) {
         // Physical mode is unchanged: raw tonemap, then optionally denoise the
         // whole image and re-present over the top.
         launchWfPresent(wf, sv, devPtr);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_STAGE_CHECK("wfPresent");
 
         if (s_denoiserEnabled) {
             denoiseAndPresent(devPtr, imageWidth, imageHeight);
@@ -378,7 +384,7 @@ void cudaRenderWavefront(uint32_t* devPtr, int imageWidth, int imageHeight)
     }
 
     launchWfPresent(wf, sv, devPtr);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_STAGE_CHECK("wfPresent");
 }
 
 // ---------------------------------------------------------------------------

@@ -720,19 +720,15 @@ static void keyCallback(GLFWwindow* window, int key, int /*scancode*/,
         for (auto& s : g_styleTable)
             s.lineStrength = std::max(0.0f, s.lineStrength - 0.1f);
         if (!g_styleTable.empty())
-            std::cout << "[style] lineStrength = " << g_styleTable[0].lineStrength
-                      << " (re-accumulating — outlines modulate throughput)\n";
+            std::cout << "[style] lineStrength = " << g_styleTable[0].lineStrength << "\n";
         restyle();
-        markSceneChanged();   // baked into the path, not a present-time operator
     }
     if (key == GLFW_KEY_PERIOD && action == GLFW_PRESS) {
         for (auto& s : g_styleTable)
             s.lineStrength = std::min(2.0f, s.lineStrength + 0.1f);
         if (!g_styleTable.empty())
-            std::cout << "[style] lineStrength = " << g_styleTable[0].lineStrength
-                      << " (re-accumulating — outlines modulate throughput)\n";
+            std::cout << "[style] lineStrength = " << g_styleTable[0].lineStrength << "\n";
         restyle();
-        markSceneChanged();
     }
 }
 

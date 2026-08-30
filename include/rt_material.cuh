@@ -19,7 +19,10 @@ __device__ __forceinline__ BsdfData loadBsdfForTriangle(
     int triangleIndex,
     Float2 uv)
 {
+    if (!bsdfs || !triangleBsdfIds || triangleIndex < 0)
+        return {};
     const int bsdfId = triangleBsdfIds[triangleIndex];
+    if (bsdfId < 0) return {};
     BsdfData bsdf = bsdfs[bsdfId];
 
     // Texture sampling

@@ -78,6 +78,7 @@ __device__ __forceinline__ void addToChannel(const WavefrontSoA& wf, int ch, int
                                               const Float3& v)
 {
     if (v.x == 0.0f && v.y == 0.0f && v.z == 0.0f) return;
+    if (ch < 0 || ch >= STYLE_CH_COUNT || !wf.channel[ch]) return;
     Float3* dst = wf.channel[ch] + idx;
     dst->x += v.x;
     dst->y += v.y;
@@ -90,6 +91,7 @@ __device__ __forceinline__ void atomicAddToChannel(const WavefrontSoA& wf, int c
                                                     const Float3& v)
 {
     if (v.x == 0.0f && v.y == 0.0f && v.z == 0.0f) return;
+    if (ch < 0 || ch >= STYLE_CH_COUNT || !wf.channel[ch]) return;
     Float3* dst = wf.channel[ch] + idx;
     atomicAdd(&dst->x, v.x);
     atomicAdd(&dst->y, v.y);
@@ -224,39 +226,6 @@ __device__ __forceinline__ void writeMissAOVs(const WfSceneView& scene, int idx)
 }
 
 // ---------------------------------------------------------------------------
-//  Outlines as a throughput modulation.
-//
-//  The probe stage wrote how much of the neighbourhood around this path vertex
-//  is a discontinuity into wf.edgeFactor.  Attenuating the path's throughput by
-//  that coverage — and depositing the line colour in its place — is what makes a
-//  line drawn inside a mirror a real line on the reflected path, which no
-//  screen-space filter can produce.
-//
-//  In physical mode wf.edgeFactor is never allocated, so this reads null and
-//  returns immediately: the photorealistic path pays nothing.
-// ---------------------------------------------------------------------------
-__device__ __forceinline__ void applyOutline(const WavefrontSoA& wf,
-                                              const WfSceneView& scene,
-                                              int idx,
-                                              PathState& ps,
-                                              const BsdfData& bsdf)
-{
-    if (wf.edgeFactor == nullptr) return;
-
-    const float edge = wf.edgeFactor[idx];
-    if (edge <= 0.0f) return;
-
-    const StyleData st = loadStyle(scene, bsdf.styleId);
-    if (st.lineStrength <= 0.0f) return;
-
-    const float coverage = fminf(edge * st.lineStrength, 1.0f);
-
-    ps.accumulatedColor = add3(ps.accumulatedColor,
-                               mul3(mul3(st.lineColor, coverage), ps.throughput));
-    ps.throughput = mul3(ps.throughput, 1.0f - coverage);
-}
-
-// ---------------------------------------------------------------------------
 //  Shadow-ray enqueue: write a prepared ShadowRayRecord into the shadow SoA.
 //  atomicAdd hands out contiguous slots, so connect can index the arrays
 //  directly with its launch index (no separate index queue needed).
@@ -273,7 +242,7 @@ __device__ __forceinline__ void enqueueShadowRay(const WavefrontSoA& wf,
                                                   bool isPrimary)
 {
     const int sSlot = atomicAdd(wf.shadowCount, 1);
-    if (sSlot >= wf.maxShadows) return;   // defensive; sized for the worst case
+    if (sSlot < 0 || sSlot >= wf.maxShadows) return;
     wf.shadowOrigin[sSlot]      = sr.origin;
     wf.shadowDir[sSlot]         = sr.direction;
     wf.shadowTMax[sSlot]        = sr.tMax;

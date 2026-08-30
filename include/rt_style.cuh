@@ -59,8 +59,8 @@ enum StyleChannel : int {
 //                                     → STYLE_CH_REFLECTED
 //   transmitBands / transmitGain / chromaShift
 //                                     → STYLE_CH_TRANSMITTED
-//   indirectGain                      → STYLE_CH_INDIRECT_DIFFUSE
-//   rim* / line*                      → applied at present / in shade
+//   indirectGain                      → folded into the body-tone input
+//   rim* / line*                      → applied at present (ink from accumEdge)
 
 // A neutral record used when a material has no style attached.  Every operator
 // below is an identity (or a no-op) under these values, so the same present
@@ -120,6 +120,16 @@ __device__ __forceinline__ float styleSmoothstep(float edge0, float edge1, float
     return styleSmoothstep01((x - edge0) / (edge1 - edge0));
 }
 
+// Display-map HDR luminance into [0, 1] before banding.  Path-traced channels
+// are scene-referred (the anime demo's ceiling light is radiance ~20), so a
+// raw clamp01 sends almost every lit sample to the top band and leaves the
+// only remaining edge in the noisy penumbra.  toneScale is the artist
+// exposure knob: higher values lift mid-tones into the upper bands.
+__device__ __forceinline__ float styleTonemap(float lum, float toneScale)
+{
+    return 1.0f - expf(-fmaxf(lum, 0.0f) * fmaxf(toneScale, 0.0f));
+}
+
 // ---------------------------------------------------------------------------
 //  Cel band quantization.
 //
@@ -166,8 +176,10 @@ __device__ __forceinline__ Float3 styleQuantizeTone(const Float3& c, int bands, 
 {
     const float lum = styleLuminance(c);
     if (lum <= 1e-6f) return {0.0f, 0.0f, 0.0f};
+    // bands <= 1 is the identity / unstyled path — do not display-map.
+    if (bands <= 1) return mul3(c, toneScale);
 
-    const float target = styleBandQuantize(lum * toneScale, bands, softness);
+    const float target = styleBandQuantize(styleTonemap(lum, toneScale), bands, softness);
     return mul3(c, target / lum);
 }
 
@@ -183,8 +195,11 @@ __device__ __forceinline__ Float3 styleBodyTone(const Float3& directDiffuse,
 {
     const float lum = styleLuminance(directDiffuse);
     if (lum <= 1e-6f) return {0.0f, 0.0f, 0.0f};
+    if (st.diffuseBands <= 1 && st.diffuseRampTex < 0)
+        return mul3(directDiffuse, st.toneScale);
 
-    const float tone = styleBandQuantize(lum * st.toneScale, st.diffuseBands, st.bandSoftness);
+    const float tone = styleBandQuantize(styleTonemap(lum, st.toneScale),
+                                         st.diffuseBands, st.bandSoftness);
 
     if (rampTex != nullptr && st.diffuseRampTex >= 0 && st.diffuseRampTex < rampCount) {
         const cudaTextureObject_t tex = rampTex[st.diffuseRampTex];
@@ -271,4 +286,14 @@ __device__ __forceinline__ Float3 styleRim(const Float3& normal, const Float3& v
     const float rim    = powf(styleClamp01(1.0f - facing), fmaxf(st.rimPower, 1e-3f));
 
     return mul3(st.rimColor, rim * st.rimStrength);
+}
+
+// Ink line: lerp toward lineColor by accumulated probe coverage.  Applied
+// after the channel operators so a 10–25% edge cannot vanish into the same
+// cel band as its neighbour.
+__device__ __forceinline__ Float3 styleInk(const Float3& color, const StyleData& st, float edge)
+{
+    if (st.lineStrength <= 0.0f || edge <= 0.0f) return color;
+    const float w = styleClamp01(edge * st.lineStrength);
+    return add3(mul3(color, 1.0f - w), mul3(st.lineColor, w));
 }

@@ -157,20 +157,15 @@ __global__ void wfShade(
     }
 
     // ── b-1) Emitter hit (uses the PREVIOUS bounce's MIS state in ps) ────
-    if (ctx.triangleEmitterFlags[its.triangleIndex] != 0) {
+    if (ctx.triangleEmitterFlags &&
+        ctx.triangleEmitterFlags[its.triangleIndex] != 0) {
         accumulateEmitterHit(rikudo, its, ctx);
     }
 
-    // ── b-2) Outlines — modulate throughput, do not paint pixels ──────────
-    // Multiplying throughput is what makes lines propagate through reflection
-    // and refraction for free: a line found on a reflected path is carried by
-    // that path's own weight.  Applied BEFORE next-event estimation so the line
-    // occludes direct lighting at this vertex too, rather than being drawn over
-    // a fully lit surface.  edgeFactor is null in physical mode, so the
-    // photoreal path returns on the first branch and pays nothing.
-    applyOutline(wf, scene, idx, rikudo, bsdf);
-
-    // ── b-3) NEE — enqueue shadow rays instead of tracing them ───────────
+    // ── b-2) NEE — enqueue shadow rays instead of tracing them ───────────
+    // Outlines are max-accumulated by the probe stage and composited as ink
+    // in wfPresent, after the cel operators.  Mixing them into throughput here
+    // would vanish into the same band as the neighbouring pixel.
     if (bsdfIsDiffuse(bsdf)) {
         rikudo.specularBounce = false;
         ShadowRayRecord sr{};
@@ -188,7 +183,7 @@ __global__ void wfShade(
         rikudo.specularBounce = true;
     }
 
-    // ── b-4) BSDF sample (overwrites ps.ray/brdfPDF — must come AFTER NEE) ─
+    // ── b-3) BSDF sample (overwrites ps.ray/brdfPDF — must come AFTER NEE) ─
     int sampledLobe = DISNEY_LOBE_DIFFUSE;
     scatterPath(rikudo, rng, its, bsdf, &sampledLobe);
 
@@ -203,7 +198,7 @@ __global__ void wfShade(
     // channel pointers alias wf.radiance, so this is unconditional.
     addToChannel(wf, vertexCh, idx, rikudo.accumulatedColor);
 
-    // ── b-5) Russian roulette + re-enqueue ───────────────────────────────
+    // ── b-4) Russian roulette + re-enqueue ───────────────────────────────
     if (!russianRoulette(rikudo, rng)) {
         storePathState(wf, idx, rikudo);
         wf.rngState[idx] = rng.state;

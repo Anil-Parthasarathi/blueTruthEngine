@@ -58,17 +58,23 @@ __global__ void wfAccumulate(
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= wf.maxPaths) return;
 
+    if (!wf.pixelIndex || !wf.radiance) return;
+
     const uint32_t pixelIndex = wf.pixelIndex[idx];
+    if (pixelIndex >= static_cast<uint32_t>(wf.maxPaths)) return;
+
     const uint32_t frameIndex = static_cast<uint32_t>(scene.frameIndex);
 
     if (!scene.styleModeAnime) {
         // All six channel pointers alias wf.radiance, so one blend is the whole
         // image — identical to the pre-stylization behaviour.
+        if (!scene.accumBuffer) return;
         accumulateWelford(scene.accumBuffer, pixelIndex, wf.radiance[idx], frameIndex);
         return;
     }
 
     for (int ch = 0; ch < STYLE_CH_COUNT; ++ch) {
+        if (!scene.accumChannel[ch] || !wf.channel[ch]) continue;
         accumulateWelford(scene.accumChannel[ch], pixelIndex, wf.channel[ch][idx], frameIndex);
     }
 
@@ -173,9 +179,11 @@ __global__ void wfPresent(
     const int styleId = scene.primaryStyleId ? scene.primaryStyleId[idx] : -1;
     const StyleData st = loadStyle(scene, styleId);
 
-    // Body tone: quantize luminance and rescale, which preserves the hue of a
-    // coloured light through the band step.
-    Float3 out = styleBodyTone(directDiffuse, st, scene.rampTex, scene.rampCount);
+    // Body tone: the wall-bounce fill is part of the terminator shape, so
+    // direct and gain-scaled indirect are quantized together — once, on the
+    // converged sum — rather than leaving noisy GI sitting on a black band.
+    const Float3 bodyInput = add3(directDiffuse, mul3(indirectDiffuse, st.indirectGain));
+    Float3 out = styleBodyTone(bodyInput, st, scene.rampTex, scene.rampCount);
 
     // Hard-edged anime highlight rather than a smooth specular falloff.
     out = add3(out, styleHighlight(directSpecular, st));
@@ -184,9 +192,6 @@ __global__ void wfPresent(
     // part raster NPR cannot reach: the bands sit on a real traced reflection.
     out = add3(out, styleMetal(reflected, st));
     out = add3(out, styleJewel(transmitted, st));
-
-    // Smooth channels pass through, gain-controlled.
-    out = add3(out, mul3(indirectDiffuse, st.indirectGain));
 
     // Rim light, from the primary-hit normal AOV and this pixel's view ray.
     if (st.rimStrength > 0.0f && scene.accumNormal) {
@@ -199,6 +204,12 @@ __global__ void wfPresent(
 
     // Emitters and the backdrop stay unstyled.
     out = add3(out, emissive);
+
+    // Ink last, after banding, so a thin edge cannot vanish into the same
+    // cel level as its neighbour.  Coverage is the max along the path, so a
+    // silhouette seen in a reflection still lands on this pixel.
+    if (scene.accumEdge)
+        out = styleInk(out, st, scene.accumEdge[idx]);
 
     framebuffer[px] = packPixelGamma(out);
 }

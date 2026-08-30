@@ -12,11 +12,10 @@
 //  What this stage does
 //  ────────────────────
 //  Outlines here are not a screen-space filter.  They are found with rays, at
-//  every path vertex, and applied as a modulation of path THROUGHPUT in wfShade.
-//  That distinction is the whole point: a line found on a reflected path is a
-//  real line on that path, so it appears correctly INSIDE a mirror, drawn from
-//  the mirror's point of view rather than smeared from the camera's. Raster
-//  cannot do this.
+//  every path vertex.  Coverage is max-accumulated into wf.edgeFactor so a
+//  silhouette seen on a reflected path still belongs to this pixel, and
+//  wfPresent composites it as ink after the cel operators.  Raster cannot
+//  draw a line from the mirror's point of view.
 //
 //  Per active path, after extend has recorded the centre hit:
 //    1. Build an orthonormal basis around the ray direction.
@@ -28,7 +27,8 @@
 //         • large relative depth jump    -> occluding contour
 //         • normals diverge past a       -> crease
 //           threshold
-//    4. Write edge = hits / probes into wf.edgeFactor[idx].
+//    4. Max-accumulate hits/probes into wf.edgeFactor[idx].  Misses and
+//       bounces past OUTLINE_MAX_DEPTH leave the prior value alone.
 //
 //  Camera jitter antialiases the resulting lines across accumulation for free.
 // ============================================================================
@@ -82,10 +82,8 @@ extern "C" __global__ void __raygen__wf_outline()
 
     if (params.wf.edgeFactor == nullptr) return;
 
-    params.wf.edgeFactor[idx] = 0.0f;
-
-    // Lines deeper than a couple of bounces are not perceptible, and each extra
-    // level costs OUTLINE_PROBE_COUNT rays per path.
+    // Do not zero: generate already cleared this path, and a later miss or a
+    // bounce past the depth cap must not wipe a silhouette found earlier.
     if (params.wf.bounceCount[idx] > OUTLINE_MAX_DEPTH) return;
 
     const int centreTri = params.wf.hitTriIndex[idx];
@@ -106,7 +104,7 @@ extern "C" __global__ void __raygen__wf_outline()
 
     // Constant apparent thickness: a wider angular offset for near surfaces, a
     // narrower one for distant ones.
-    const float probeAngle = st.lineWidth / centreDist;
+    const float probeAngle = fmaxf(st.lineWidth / centreDist, OUTLINE_MIN_PROBE_ANGLE);
 
     // Orthonormal basis around the ray so the probes fan out evenly.
     const Frame3 basis = makeFrameFromNormal(direction);
@@ -150,6 +148,8 @@ extern "C" __global__ void __raygen__wf_outline()
         }
     }
 
-    params.wf.edgeFactor[idx] =
-        static_cast<float>(edgeHits) / static_cast<float>(OUTLINE_PROBE_COUNT);
+    const float coverage = static_cast<float>(edgeHits) /
+                           static_cast<float>(OUTLINE_PROBE_COUNT);
+    if (coverage > params.wf.edgeFactor[idx])
+        params.wf.edgeFactor[idx] = coverage;
 }

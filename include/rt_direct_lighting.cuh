@@ -268,9 +268,16 @@ __device__ __forceinline__ bool prepareMeshEmitterNEE(
     common = div3(common, lightPDFareaDirect);
     common = mul3(common, pathRecord.throughput);
 
+    const float tMax = distToLight - RT_EPSILON;
+    // optixTrace with tmin > tmax is undefined and can illegal-access.
+    // This happens when NEE samples a point on the same (or a very nearby)
+    // emitter the path is already sitting on — e.g. camera rays that hit
+    // the area light and then sample it again.
+    if (tMax <= RT_EPSILON) return false;
+
     shadowRay.origin           = its.hitPoint;
     shadowRay.direction        = emitterQuery.directionToLight;
-    shadowRay.tMax             = distToLight - RT_EPSILON;
+    shadowRay.tMax             = tMax;
     shadowRay.contribution     = mul3(frDiffuse,  common);
     shadowRay.contributionSpec = mul3(frSpecular, common);
     return true;
@@ -375,10 +382,13 @@ __device__ __forceinline__ bool prepareSpotlightNEE(
 
     const Float3 common = mul3(mul3(spotLe, cosSurface), pathRecord.throughput);
 
+    const float tMax = dist - RT_EPSILON;
+    if (tMax <= RT_EPSILON) return false;
+
     // Shadow ray — bound to just before the light to avoid self-intersection
     shadowRay.origin           = its.hitPoint;
     shadowRay.direction        = dirToLight;
-    shadowRay.tMax             = dist - RT_EPSILON;
+    shadowRay.tMax             = tMax;
     shadowRay.contribution     = mul3(frDiffuse,  common);
     shadowRay.contributionSpec = mul3(frSpecular, common);
     return true;

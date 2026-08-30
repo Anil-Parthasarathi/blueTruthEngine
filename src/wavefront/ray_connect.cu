@@ -41,6 +41,7 @@
 #include "rt_cuda_math.cuh"
 #include "rt_optix_shading.cuh"                // traceOccluded (+ toF3)
 #include "wavefront/wavefront_shading.cuh"     // atomicAddToChannel
+#include "rt_constants.cuh"                    // RT_EPSILON
 
 // The launch-params constant is defined once in optix_programs.cu; we just
 // re-declare it here so this TU can access it.
@@ -54,10 +55,14 @@ extern "C" __global__ void __raygen__wf_shadow()
 {
     const uint32_t sIdx = optixGetLaunchIndex().x;   // launch index == shadow slot
 
+    if (params.wf.shadowOrigin == nullptr) return;
+    if (static_cast<int>(sIdx) >= params.wf.maxShadows) return;
+
     // read the shadow ray from the SoA
     const Float3 origin = params.wf.shadowOrigin[sIdx];
     const Float3 direction = params.wf.shadowDir[sIdx];
     const float tMax = params.wf.shadowTMax[sIdx];
+    if (tMax <= RT_EPSILON) return;
     const Float3 contribDiffuse = params.wf.shadowContrib[sIdx];
     const Float3 contribSpecular = params.wf.shadowContribSpec[sIdx];
     const uint32_t pathIdx = params.wf.shadowPathIdx[sIdx];
@@ -80,7 +85,8 @@ extern "C" __global__ void __raygen__wf_shadow()
         atomicAddToChannel(params.wf, STYLE_CH_DIRECT_DIFFUSE,  pathIdx, contribDiffuse);
         atomicAddToChannel(params.wf, STYLE_CH_DIRECT_SPECULAR, pathIdx, contribSpecular);
     } else {
-        const int ch = static_cast<int>(params.wf.styleChannel[pathIdx]);
+        int ch = static_cast<int>(params.wf.styleChannel[pathIdx]);
+        if (ch < 0 || ch >= STYLE_CH_COUNT) ch = STYLE_CH_INDIRECT_DIFFUSE;
         atomicAddToChannel(params.wf, ch, pathIdx, contribDiffuse);
         atomicAddToChannel(params.wf, ch, pathIdx, contribSpecular);
     }

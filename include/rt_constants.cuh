@@ -27,12 +27,15 @@ static constexpr float RT_ENV_TMAX       = 1e30f;
 //  Ray-probed outlines (anime style mode only)
 // ---------------------------------------------------------------------------
 // Outlines are found by shooting probe rays around each path vertex and
-// classifying discontinuities, rather than filtering the final image.  Because
-// the edge factor modulates path THROUGHPUT, a line seen inside a mirror is a
-// real line on that reflected path — which a screen-space filter cannot do.
+// classifying discontinuities, rather than filtering the final image.  Coverage
+// is max-accumulated along the path and composited as ink at present time, so a
+// line seen inside a mirror still lands on the correct screen pixels.
 //
 // Cost is OUTLINE_PROBE_COUNT extra rays per active path per bounce, so the
 // depth cap keeps it bounded: lines beyond a couple of bounces are not visible
 // anyway.
 static constexpr int   OUTLINE_MAX_DEPTH   = 2;
 static constexpr int   OUTLINE_PROBE_COUNT = 4;
+// Floor on the probe angular offset (~3 px at 720p / 40° fov) so authored
+// line_width values near 0.004 stay visible instead of collapsing to a hairline.
+static constexpr float OUTLINE_MIN_PROBE_ANGLE = 0.003f;
