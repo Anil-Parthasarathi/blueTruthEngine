@@ -41,6 +41,17 @@ __device__ __forceinline__ BsdfData loadBsdfForTriangle(
                     bsdf.p1.w = 1.0f - fmaxf(bsdf.p0.x, fmaxf(bsdf.p0.y, bsdf.p0.z));
                 }
             }
+
+            // glTF metallic-roughness: G = roughness, B = metallic, multiplied by
+            // the BSDF factors already stored in p0.w / p1.x.
+            if (lightingCtx.texObjectsMr != nullptr) {
+                const cudaTextureObject_t mrObj = lightingCtx.texObjectsMr[matId];
+                if (mrObj != 0 && bsdf.type == BSDF_Disney) {
+                    const float4 mr = tex2D<float4>(mrObj, uv.x, uv.y);
+                    bsdf.p0.w *= mr.y;
+                    bsdf.p1.x *= mr.z;
+                }
+            }
         }
     }
 

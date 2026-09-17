@@ -26,6 +26,8 @@
 // ── Project headers ─────────────────────────────────────────────────
 #include "render_kernel.h"
 #include "scene.h"
+#include "mesh_transform.h"
+#include "gltf_loader.h"
 
 // ── Standard library ────────────────────────────────────────────────
 #include <iostream>
@@ -262,96 +264,9 @@ static void initGL()
 //  Load all triangles from an OBJ via tinyobjloader
 // =====================================================================
 
-static Float3 transformPoint(const Float3& p,
-                               const MeshDesc::TransformDesc& t)
-{
-    // Apply Scale -> Rx -> Ry -> Rz -> Translate (Euler, degrees).
-    float x = p.x * t.scaleX;
-    float y = p.y * t.scaleY;
-    float z = p.z * t.scaleZ;
-
-    const float degToRad = 3.14159265358979323846f / 180.0f;
-    float rx = t.rotXDegrees * degToRad;
-    float ry = t.rotYDegrees * degToRad;
-    float rz = t.rotZDegrees * degToRad;
-
-    // Rx
-    {
-        float cx = std::cos(rx);
-        float sx = std::sin(rx);
-        float y2 = y * cx - z * sx;
-        float z2 = y * sx + z * cx;
-        y = y2;
-        z = z2;
-    }
-
-    // Ry
-    {
-        float cy = std::cos(ry);
-        float sy = std::sin(ry);
-        float x2 = x * cy + z * sy;
-        float z2 = -x * sy + z * cy;
-        x = x2;
-        z = z2;
-    }
-
-    // Rz
-    {
-        float cz = std::cos(rz);
-        float sz = std::sin(rz);
-        float x2 = x * cz - y * sz;
-        float y2 = x * sz + y * cz;
-        x = x2;
-        y = y2;
-    }
-
-    // Translate
-    x += t.posX;
-    y += t.posY;
-    z += t.posZ;
-
-    return {x, y, z};
-}
-
-// Like transformPoint but for directions: apply rotations only (no scale, no translation).
-static Float3 transformNormal(const Float3& n,
-                               const MeshDesc::TransformDesc& t)
-{
-    float x = n.x, y = n.y, z = n.z;
-
-    const float degToRad = 3.14159265358979323846f / 180.0f;
-    float rx = t.rotXDegrees * degToRad;
-    float ry = t.rotYDegrees * degToRad;
-    float rz = t.rotZDegrees * degToRad;
-
-    {
-        float cx = std::cos(rx), sx = std::sin(rx);
-        float y2 = y * cx - z * sx;
-        float z2 = y * sx + z * cx;
-        y = y2; z = z2;
-    }
-    {
-        float cy = std::cos(ry), sy = std::sin(ry);
-        float x2 = x * cy + z * sy;
-        float z2 = -x * sy + z * cy;
-        x = x2; z = z2;
-    }
-    {
-        float cz = std::cos(rz), sz = std::sin(rz);
-        float x2 = x * cz - y * sz;
-        float y2 = x * sz + y * cz;
-        x = x2; y = y2;
-    }
-
-    // Normalize (handles any uniform scale implicitly).
-    float len = std::sqrt(x * x + y * y + z * z);
-    if (len > 1e-8f) { x /= len; y /= len; z /= len; }
-    return {x, y, z};
-}
-
 static std::vector<TriangleData> loadTrianglesFromObj(
     const std::string& path,
-    const MeshDesc::TransformDesc& transform)
+    const TransformDesc& transform)
 {
     tinyobj::attrib_t                attrib;
     std::vector<tinyobj::shape_t>    shapes;
@@ -688,29 +603,13 @@ int main(int argc, char** argv)
         materials.push_back(loadTextureAverage(m.albedoTexture));
     }
 
-    // Load per-material textures as full RGBA images and upload to the GPU.
-    // Each entry aligns with scene.materials[i]; materials with no albedoTexture
-    // get an implicit 1×1 white fallback (texture modulation has no visible effect).
-    {
-        std::vector<ImageRGBA> texImages;
-        texImages.reserve(scene.materials.size());
-        for (const auto& m : scene.materials)
-            texImages.push_back(loadImageRGBA(m.albedoTexture));
-
-        std::vector<const uint8_t*> ptrs;
-        std::vector<int>            widths, heights;
-        ptrs.reserve(texImages.size());
-        widths.reserve(texImages.size());
-        heights.reserve(texImages.size());
-        for (const auto& img : texImages) {
-            // Empty pixels means no texture for this material — pass nullptr
-            // so cudaInitTextures leaves the texture object handle as 0.
-            ptrs.push_back(img.pixels.empty() ? nullptr : img.pixels.data());
-            widths.push_back(img.width);
-            heights.push_back(img.height);
-        }
-        cudaInitTextures(ptrs.data(), widths.data(), heights.data(),
-                         static_cast<int>(texImages.size()));
+    std::vector<ImageRGBA> albedoImages;
+    std::vector<ImageRGBA> mrImages;
+    albedoImages.reserve(scene.materials.size());
+    mrImages.reserve(scene.materials.size());
+    for (const auto& m : scene.materials) {
+        albedoImages.push_back(loadImageRGBA(m.albedoTexture));
+        mrImages.push_back(ImageRGBA{}); // XML materials have no MR map
     }
 
     auto materialIndexOf = [&](const std::string& name) -> int {
@@ -784,6 +683,23 @@ int main(int argc, char** argv)
     sceneEmitterCdf.push_back(0.0f);
     float sceneEmitterWeightSum = 0.0f;
 
+    auto finishEmitter = [&](int triIndexOffset, int cdfOffset, float areaSum,
+                             const Float3& radiance) {
+        const float lum = 0.2126f * radiance.x + 0.7152f * radiance.y + 0.0722f * radiance.z;
+        const float weight = areaSum * lum;
+        sceneEmitterWeightSum += weight;
+        sceneEmitterCdf.push_back(sceneEmitterWeightSum);
+
+        EmitterData e{};
+        e.triIndexOffset = triIndexOffset;
+        e.triCount = static_cast<int>(emitterTriIndices.size()) - triIndexOffset;
+        e.cdfOffset = cdfOffset;
+        e.radiance = radiance;
+        e.areaSum = areaSum;
+        e.powerWeight = weight;
+        emitters.push_back(e);
+    };
+
     // Per-triangle emitter flag: set from scene mesh isEmitter (Nori-style).
     for (const auto& mesh : scene.meshes) {
         const int matId = materialIndexOf(mesh.materialName);
@@ -808,13 +724,10 @@ int main(int argc, char** argv)
         }();
 
         const Float3 emitColor = { mesh.radianceR, mesh.radianceG, mesh.radianceB };
-        // If this mesh is emissive, create an emitter entry backed by its triangles.
-        int emitterIndex = -1;
         int triIndexOffset = 0;
         int cdfOffset = 0;
         float emitterAreaSum = 0.0f;
         if (mesh.isEmitter) {
-            emitterIndex = static_cast<int>(emitters.size());
             triIndexOffset = static_cast<int>(emitterTriIndices.size());
             cdfOffset = static_cast<int>(emitterTriCdf.size());
             emitterTriCdf.push_back(0.0f);
@@ -832,7 +745,6 @@ int main(int argc, char** argv)
                 const int triIdx = static_cast<int>(triangles.size()) - 1;
                 const float a = triangleAreaHost(t);
 
-                // Per-emitter lists
                 emitterTriIndices.push_back(triIdx);
                 emitterAreaSum += a;
                 emitterTriCdf.push_back(emitterAreaSum);
@@ -841,26 +753,92 @@ int main(int argc, char** argv)
             }
         }
 
-        if (mesh.isEmitter) {
-            // Power-weight: areaSum * luminance(radiance) (simple)
-            const float lum = 0.2126f * mesh.radianceR + 0.7152f * mesh.radianceG + 0.0722f * mesh.radianceB;
-            const float weight = emitterAreaSum * lum;
-            sceneEmitterWeightSum += weight;
-            sceneEmitterCdf.push_back(sceneEmitterWeightSum);
+        if (mesh.isEmitter)
+            finishEmitter(triIndexOffset, cdfOffset, emitterAreaSum, emitColor);
+    }
 
-            EmitterData e{};
-            e.triIndexOffset = triIndexOffset;
-            e.triCount = static_cast<int>(emitterTriIndices.size()) - triIndexOffset;
-            e.cdfOffset = cdfOffset;
-            e.radiance = { mesh.radianceR, mesh.radianceG, mesh.radianceB };
-            e.areaSum = emitterAreaSum;
-            e.powerWeight = weight;
-            emitters.push_back(e);
+    // glTF / GLB drop-ins: materials, textures, and submeshes come from the file.
+    for (const auto& modelDesc : scene.models) {
+        const GltfLoadResult gltf = loadGltfModel(modelDesc.filename, modelDesc.transform);
+
+        const int matOffset  = static_cast<int>(materials.size());
+        const int bsdfOffset = static_cast<int>(bsdfs.size());
+        const int firstTri   = static_cast<int>(triangles.size());
+
+        for (const auto& slot : gltf.materials) {
+            bsdfs.push_back(slot.bsdf);
+            materials.push_back({1.0f, 1.0f, 1.0f});
+
+            ImageRGBA albedo{};
+            albedo.pixels = slot.albedo.pixels;
+            albedo.width  = slot.albedo.width > 0 ? slot.albedo.width : 1;
+            albedo.height = slot.albedo.height > 0 ? slot.albedo.height : 1;
+            albedoImages.push_back(std::move(albedo));
+
+            ImageRGBA mr{};
+            mr.pixels = slot.metallicRoughness.pixels;
+            mr.width  = slot.metallicRoughness.width > 0 ? slot.metallicRoughness.width : 1;
+            mr.height = slot.metallicRoughness.height > 0 ? slot.metallicRoughness.height : 1;
+            mrImages.push_back(std::move(mr));
+        }
+
+        for (size_t i = 0; i < gltf.triangles.size(); ++i) {
+            const int localMat = gltf.materialIds[i];
+            const auto& slot = gltf.materials[static_cast<size_t>(localMat)];
+            triangles.push_back(gltf.triangles[i]);
+            triangleMaterialIds.push_back(matOffset + localMat);
+            triangleBsdfIds.push_back(bsdfOffset + localMat);
+            triangleEmitterFlags.push_back(slot.isEmitter ? static_cast<uint8_t>(1) : static_cast<uint8_t>(0));
+            triangleEmission.push_back(slot.isEmitter ? slot.emission : Float3{0.0f, 0.0f, 0.0f});
+        }
+
+        for (size_t mi = 0; mi < gltf.materials.size(); ++mi) {
+            const auto& slot = gltf.materials[mi];
+            if (!slot.isEmitter)
+                continue;
+
+            const int triIndexOffset = static_cast<int>(emitterTriIndices.size());
+            const int cdfOffset = static_cast<int>(emitterTriCdf.size());
+            emitterTriCdf.push_back(0.0f);
+            float areaSum = 0.0f;
+            const int matId = matOffset + static_cast<int>(mi);
+
+            for (int ti = firstTri; ti < static_cast<int>(triangles.size()); ++ti) {
+                if (triangleMaterialIds[static_cast<size_t>(ti)] != matId)
+                    continue;
+                const float a = triangleAreaHost(triangles[static_cast<size_t>(ti)]);
+                emitterTriIndices.push_back(ti);
+                areaSum += a;
+                emitterTriCdf.push_back(areaSum);
+            }
+            if (areaSum > 0.0f)
+                finishEmitter(triIndexOffset, cdfOffset, areaSum, slot.emission);
         }
     }
 
+    {
+        auto uploadLayer = [](const std::vector<ImageRGBA>& images,
+                              void (*initFn)(const uint8_t* const*, const int*, const int*, int)) {
+            std::vector<const uint8_t*> ptrs;
+            std::vector<int> widths, heights;
+            ptrs.reserve(images.size());
+            widths.reserve(images.size());
+            heights.reserve(images.size());
+            for (const auto& img : images) {
+                ptrs.push_back(img.pixels.empty() ? nullptr : img.pixels.data());
+                widths.push_back(img.width);
+                heights.push_back(img.height);
+            }
+            initFn(ptrs.empty() ? nullptr : ptrs.data(),
+                   widths.data(), heights.data(),
+                   static_cast<int>(images.size()));
+        };
+        uploadLayer(albedoImages, cudaInitTextures);
+        uploadLayer(mrImages, cudaInitMrTextures);
+    }
+
     if (triangles.empty()) {
-        std::cerr << "[scene] Scene has no triangles after loading meshes.\n";
+        std::cerr << "[scene] Scene has no triangles after loading meshes/models.\n";
         std::exit(EXIT_FAILURE);
     }
 
@@ -923,6 +901,32 @@ int main(int argc, char** argv)
         } else {
             cudaInitSpotlights(nullptr, 0);
         }
+    }
+
+    // ── Environment map (HDRI IBL) ──────────────────────────────────
+    if (!scene.envMapPath.empty()) {
+        int envW = 0, envH = 0, envComp = 0;
+        float* envPixelsRGB = stbi_loadf(scene.envMapPath.c_str(), &envW, &envH, &envComp, 3);
+        if (!envPixelsRGB) {
+            std::cerr << "[envmap] Failed to load \"" << scene.envMapPath << "\"\n";
+            std::exit(EXIT_FAILURE);
+        }
+
+        // stbi_loadf with comp=3 gives RGB; CUDA textures need RGBA float4.
+        // Pad with alpha = 1.0f.
+        std::vector<float> envPixelsRGBA(static_cast<size_t>(envW) * static_cast<size_t>(envH) * 4);
+        for (int i = 0; i < envW * envH; ++i) {
+            envPixelsRGBA[static_cast<size_t>(i) * 4 + 0] = envPixelsRGB[i * 3 + 0];
+            envPixelsRGBA[static_cast<size_t>(i) * 4 + 1] = envPixelsRGB[i * 3 + 1];
+            envPixelsRGBA[static_cast<size_t>(i) * 4 + 2] = envPixelsRGB[i * 3 + 2];
+            envPixelsRGBA[static_cast<size_t>(i) * 4 + 3] = 1.0f;
+        }
+        stbi_image_free(envPixelsRGB);
+
+        cudaInitEnvMap(envPixelsRGBA.data(), envW, envH,
+                       scene.envMapIntensity, scene.envMapRotation);
+    } else {
+        cudaInitEnvMap(nullptr, 0, 0, 0.0f, 0.0f);
     }
 
     cudaRegisterPBO(g_pbo);

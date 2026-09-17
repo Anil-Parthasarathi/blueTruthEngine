@@ -118,8 +118,11 @@ static __forceinline__ __device__ DirectLightingContext makeDirectLightingContex
     ctx.spotlights           = lp.spotlights;
     ctx.spotlightCount       = lp.spotlightCount;
     ctx.texObjects           = lp.texObjects;
+    ctx.texObjectsMr         = lp.texObjectsMr;
     ctx.triangleMaterialIds  = lp.triangleMaterialIds;
     ctx.textureCount         = lp.textureCount;
+    ctx.envMap               = lp.envMap;
+    ctx.hasEnvMap            = lp.hasEnvMap;
     return ctx;
 }
 
@@ -173,6 +176,30 @@ static __forceinline__ __device__ void sampleSpotlightNEE(
 }
 
 // ---------------------------------------------------------------------------
+//  Environment map NEE wrapper: sample the env map, trace a shadow ray,
+//  add the contribution if unoccluded.  (Wavefront pipeline uses
+//  prepareEnvMapNEE + enqueueShadowRay instead.)
+// ---------------------------------------------------------------------------
+static __forceinline__ __device__ void sampleEnvMapNEE(
+    PathState& pathRecord,
+    RngState& rng,
+    const Intersection& its,
+    const BsdfData& bsdf,
+    const DirectLightingContext& lightingCtx,
+    OptixTraversableHandle handle)
+{
+    ShadowRayRecord shadowRay{};
+    if (!prepareEnvMapNEE(pathRecord, rng, its, bsdf, lightingCtx, shadowRay)) {
+        return;
+    }
+    if (traceOccluded(handle, shadowRay.origin, shadowRay.direction, shadowRay.tMax)) {
+        return;
+    }
+    pathRecord.accumulatedColor =
+        add3(pathRecord.accumulatedColor, shadowRay.contribution);
+}
+
+// ---------------------------------------------------------------------------
 //  Main path-tracing step: intersect, shade, advance ray.
 //  This is the megakernel's per-bounce body; the wavefront pipeline runs the
 //  same sequence split across its stages:
@@ -193,6 +220,8 @@ static __forceinline__ __device__ bool traceRay(
 {
     Intersection its{};
     if (!traceClosest(handle, pathRecord.ray, its)) {
+        // Ray escaped the scene — accumulate environment map radiance (MIS weighted)
+        accumulateEnvMapHit(pathRecord, lightingCtx);
         return false;
     }
 
@@ -208,6 +237,7 @@ static __forceinline__ __device__ bool traceRay(
         pathRecord.specularBounce = false;
         sampleAreaEmitterNEE(pathRecord, rng, its, bsdf, lightingCtx, handle);
         sampleSpotlightNEE(pathRecord, its, bsdf, lightingCtx, handle);
+        sampleEnvMapNEE(pathRecord, rng, its, bsdf, lightingCtx, handle);
     } else {
         pathRecord.specularBounce = true;
     }

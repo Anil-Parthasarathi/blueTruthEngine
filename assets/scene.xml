@@ -1,8 +1,20 @@
 <scene>
-    <!-- BSDF templates -->
+    <!-- Environment lighting (HDRI IBL) -->
+    <environment map="assets/sky.hdr" intensity="1.0" rotation="0.0" />
+
+    <!-- Cornell walls: slightly less neon so bleed reads as light, not paint -->
     <bsdf name="whiteDiffuse" type="diffuse" albedoR="0.75" albedoG="0.75" albedoB="0.75" />
-    <bsdf name="redDiffuse"   type="diffuse" albedoR="0.75" albedoG="0.15" albedoB="0.15" />
-    <bsdf name="greenDiffuse" type="diffuse" albedoR="0.15" albedoG="0.75" albedoB="0.15" />
+    <bsdf name="redDiffuse"   type="diffuse" albedoR="0.68" albedoG="0.10" albedoB="0.08" />
+    <bsdf name="greenDiffuse" type="diffuse" albedoR="0.12" albedoG="0.52" albedoB="0.14" />
+
+    <!-- Clear glass for side walls: low roughness, high transmission, neutral tint. -->
+    <bsdf name="clearGlass" type="disney"
+          base_colorR="1.0" base_colorG="1.0" base_colorB="1.0"
+          roughness="0.02" metallic="0.0" specular="1.0"
+          specular_transmission="0.98" specular_tint="0.0"
+          sheen="0.0" sheen_tint="0.5" subsurface="0.0"
+          anisotropic="0.0" clearcoat="0.0" clearcoat_gloss="1.0"
+          eta="1.52" />
 
     <!-- Disney materials -->
     <bsdf name="blueDiamond" type="disney"
@@ -12,62 +24,95 @@
           sheen="0.0" sheen_tint="0.5" subsurface="0.0"
           anisotropic="0.0" clearcoat="0.25" clearcoat_gloss="1.0"
           eta="2.42" />
+
+    <!-- Measured-ish gold: less candy yellow, roughness high enough that GGX alpha
+         (roughness^2) is clearly blurrier than the chrome sphere. -->
     <bsdf name="gold" type="disney"
-          base_colorR="1.0" base_colorG="0.78" base_colorB="0.22"
-          roughness="0.28" metallic="1.0" specular="0.5"
-          specular_transmission="0.0" specular_tint="0.0"
-          sheen="0.0" sheen_tint="0.5" subsurface="0.0"
-          anisotropic="0.0" clearcoat="0.0" clearcoat_gloss="1.0"
-          eta="1.5" />
-    <bsdf name="silver" type="disney"
-          base_colorR="0.95" base_colorG="0.93" base_colorB="0.88"
-          roughness="0.12" metallic="1.0" specular="0.5"
+          base_colorR="0.93" base_colorG="0.68" base_colorB="0.28"
+          roughness="0.42" metallic="1.0" specular="0.5"
           specular_transmission="0.0" specular_tint="0.0"
           sheen="0.0" sheen_tint="0.5" subsurface="0.0"
           anisotropic="0.0" clearcoat="0.0" clearcoat_gloss="1.0"
           eta="1.5" />
 
-     <bsdf name="marble" type="disney"
-          base_colorR="0.92" base_colorG="0.91" base_colorB="0.89"
-          roughness="0.15" metallic="0.0" specular="0.5"
+    <!-- Near-mirror chrome so the gold/silver contrast is obvious. -->
+    <bsdf name="silver" type="disney"
+          base_colorR="0.97" base_colorG="0.96" base_colorB="0.93"
+          roughness="0.055" metallic="1.0" specular="0.5"
           specular_transmission="0.0" specular_tint="0.0"
-          sheen="0.0" sheen_tint="0.0" subsurface="0.4"
-          anisotropic="0.0" clearcoat="0.1" clearcoat_gloss="0.9"
+          sheen="0.0" sheen_tint="0.5" subsurface="0.0"
+          anisotropic="0.0" clearcoat="0.0" clearcoat_gloss="1.0"
+          eta="1.5" />
+
+    <!-- Polished marble for the checker floor: enough gloss to catch the spheres. -->
+    <bsdf name="marble" type="disney"
+          base_colorR="0.90" base_colorG="0.89" base_colorB="0.86"
+          roughness="0.12" metallic="0.0" specular="0.6"
+          specular_transmission="0.0" specular_tint="0.0"
+          sheen="0.0" sheen_tint="0.0" subsurface="0.15"
+          anisotropic="0.0" clearcoat="0.2" clearcoat_gloss="0.85"
           eta="1.49" />
 
+    <!-- Porcelain statue: darker than pure white so the specular/clearcoat can read,
+         with a little subsurface so it does not look like flat plaster. -->
+    <bsdf name="porcelain" type="disney"
+          base_colorR="0.86" base_colorG="0.84" base_colorB="0.80"
+          roughness="0.08" metallic="0.0" specular="0.7"
+          specular_transmission="0.0" specular_tint="0.0"
+          sheen="0.05" sheen_tint="0.5" subsurface="0.22"
+          anisotropic="0.0" clearcoat="0.45" clearcoat_gloss="0.92"
+          eta="1.50" />
 
+    <bsdf name="yellowCarPaint" type="disney"
+          base_colorR="0.98" base_colorG="0.78" base_colorB="0.05"
+          roughness="0.25" metallic="0.0" specular="0.5"
+          specular_transmission="0.0" specular_tint="0.0"
+          sheen="0.0" sheen_tint="0.0" subsurface="0.0"
+          anisotropic="0.0" clearcoat="1.0" clearcoat_gloss="1.0"
+          eta="1.5" />
 
     <!-- Materials reference a BSDF.
          albedoTexture is optional — omit it (or leave empty) for untextured materials;
          the engine will use the BSDF base_color / albedo parameters directly. -->
-    <material name="white"        bsdf="whiteDiffuse" />
-    <material name="floor"        albedoTexture="assets/checkerboard.jpg" bsdf="marble" />
-    <material name="red"          bsdf="redDiffuse" />
-    <material name="green"        bsdf="greenDiffuse" />
-    <material name="pinkDiamondM" bsdf="blueDiamond" />
-    <material name="goldM"        bsdf="gold" />
-    <material name="silverM"      bsdf="silver" />
+    <material name="white"           bsdf="whiteDiffuse" />
+    <material name="floor"           albedoTexture="assets/checkerboard.jpg" bsdf="marble" />
+    <material name="red"             bsdf="redDiffuse" />
+    <material name="green"           bsdf="greenDiffuse" />
+    <material name="pinkDiamondM"    bsdf="blueDiamond" />
+    <material name="goldM"           bsdf="gold" />
+    <material name="silverM"         bsdf="silver" />
+    <material name="yellowCarPaintM" bsdf="yellowCarPaint" />
+    <material name="marbleM"         bsdf="marble" />
+    <material name="porcelainM"      bsdf="porcelain" />
 
     <!-- Cornell box geometry (already positioned in OBJ files) -->
     <mesh filename="assets/floor.obj"     material="floor" />
-    <mesh filename="assets/walls.obj"     material="white" />
     <mesh filename="assets/leftwall.obj"  material="red" />
     <mesh filename="assets/rightwall.obj" material="green" />
 
-    <!-- Ceiling area light — dimmed so the spotlight is the dominant source -->
-    <mesh filename="assets/light.obj"
-          material="white"
-          isEmitter="true" radianceR="18" radianceG="18" radianceB="18" />
-
-    <!-- Objects -->
-    <mesh filename="assets/sphere1.obj" material="goldM" />
+    <!-- Metals in the back corners; Sakutaro statue on the floor as the hero.
+         Sketchfab GLB is Z-up and huge; rotX=-90 stands it up, scale fits the box. -->
+    <mesh filename="assets/sphere1.obj" material="goldM"
+          posX="-0.15" posZ="-0.35" />
     <mesh filename="assets/sphere2.obj" material="silverM"
-          posX="0.05" posY="-0.05" posZ="-0.20" />
-    <mesh filename="assets/horse.obj"
-          material="pinkDiamondM"
-          scaleX="0.4" scaleY="0.4" scaleZ="0.4"
-          rotY="15"
-          posX="0.06" posY="0.37" posZ="-0.10" />
+          posX="0.10" posZ="-0.85" />
+    <model filename="assets/sakutaro.glb"
+           scaleX="0.0022" scaleY="0.0022" scaleZ="0.0022"
+           rotX="90" rotY="325"
+           posX="0.09" posY="0.52" posZ="0.42" />
+    <!-- Statue of Liberty: Y-up; local base is at Y≈36 so posY lifts feet to the floor. -->
+    <model filename="assets/liberty.glb"
+           scaleX="0.018" scaleY="0.018" scaleZ="0.018"
+           rotY="278"
+           posX="-0.40" posY="-0.647" posZ="0.68" />
+    <!-- Gold demo cube, sitting on the floor to Sakutaro's right. -->
+    <model filename="assets/example_cube.glb"
+           scaleX="0.25" scaleY="0.25" scaleZ="0.25"
+           posX="0.58" posY="0.125" posZ="0.42" />
+    <!-- Dragon statuette perched on the cube. -->
+    <model filename="assets/dragon.glb"
+           scaleX="0.0006" scaleY="0.0006" scaleZ="0.0006"
+           posX="0.58" posY="0.251" posZ="0.42" />
 
     <!-- Spotlight: positioned just below the ceiling light, aimed at the center
          of the back wall (0, 0.8, -1.04).  Direction vector is from the light
@@ -81,12 +126,12 @@
         outerConeAngle="38.0"
     / -->
 
-    <!-- Camera used for ray generation -->
+    <!-- Camera: slightly lower look-at so the standing statue and floor stay in frame. -->
     <camera
-        eyeX="0.0" eyeY="0.8" eyeZ="2.7"
-        lookAtX="0.0" lookAtY="0.8" lookAtZ="-0.2"
+        eyeX="0.08" eyeY="0.70" eyeZ="2.55"
+        lookAtX="0.02" lookAtY="0.50" lookAtZ="0.10"
         upX="0" upY="1" upZ="0"
-        fovY="40"
+        fovY="38"
     />
 
     <window width="800" height="600" />

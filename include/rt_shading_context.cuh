@@ -46,8 +46,12 @@ struct DirectLightingContext {
     // Texture sampling: array of CUDA texture object handles (one per material),
     // and the per-triangle material index for lookup.
     const cudaTextureObject_t* texObjects;
+    const cudaTextureObject_t* texObjectsMr; // metallic-roughness (G=rough, B=metal)
     const int* triangleMaterialIds;
     int textureCount;
+    // Environment map (HDRI IBL)
+    EnvMapData envMap;
+    bool       hasEnvMap;
 };
 
 // ---------------------------------------------------------------------------

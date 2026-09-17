@@ -62,6 +62,20 @@ struct SpotlightData {
     float  outerConeCosine; // cos(outerConeAngle) — zero outside this angle
 };
 
+/// Environment map (HDRI image-based lighting) GPU descriptor.
+/// The marginal–conditional CDF enables importance sampling of the
+/// equirectangular map proportional to luminance × sin(θ).
+struct EnvMapData {
+    unsigned long long texObj;  // cudaTextureObject_t — HDR float4 texture (equirectangular)
+    int    width, height;
+    float  intensity;           // radiance scale multiplier
+    float  rotationRadians;     // Y-axis rotation offset for φ
+    // Marginal–conditional CDF for importance sampling:
+    float* marginalCdf;         // [height+1] — row marginal CDF (prefix sums of row integrals)
+    float* conditionalCdf;      // [height * (width+1)] — per-row column CDF (prefix sums)
+    float  totalPower;          // sum of all luminance×sinθ (for PDF normalisation)
+};
+
 /// Minimal BSDF plumbing. You will implement the behavior.
 enum BsdfType : int {
     BSDF_Diffuse    = 1,
@@ -142,6 +156,22 @@ void cudaInitTextures(const uint8_t* const* pixels,
                       const int* widths,
                       const int* heights,
                       int textureCount);
+
+/// Optional metallic-roughness maps, same indexing as cudaInitTextures.
+/// glTF packs roughness in G and metallic in B.  Pass nullptr entries for
+/// materials that have no MR map.  Re-calling replaces the previous MR set.
+void cudaInitMrTextures(const uint8_t* const* pixels,
+                        const int* widths,
+                        const int* heights,
+                        int textureCount);
+
+/// Upload an HDRI environment map for image-based lighting.
+/// `hdriPixelsRGBA` is a flat array of W×H float4 (RGBA) pixels in row-major order.
+/// `intensity` scales the radiance; `rotationDeg` rotates the map around Y in degrees.
+/// Internally constructs a 2D marginal–conditional CDF for importance sampling.
+/// Re-calling replaces any previous environment map.  Pass nullptr/0 to clear it.
+void cudaInitEnvMap(const float* hdriPixelsRGBA, int width, int height,
+                    float intensity, float rotationDeg);
 
 /// Register an OpenGL PBO with CUDA so the kernel can write into it.
 void cudaRegisterPBO(uint32_t pbo);

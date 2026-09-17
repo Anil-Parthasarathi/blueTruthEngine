@@ -107,7 +107,10 @@ void cudaRender(int imageWidth, int imageHeight)
     lp.spotlights           = s_spotlights_d;
     lp.spotlightCount       = s_spotlightCount;
     lp.texObjects           = s_texObjects_d;
+    lp.texObjectsMr         = s_texObjectsMr_d;
     lp.textureCount         = s_textureCount;
+    lp.envMap               = s_envMap_h;
+    lp.hasEnvMap            = s_hasEnvMap;
 
     // Render the frame in horizontal row-band tiles. Each optixLaunch covers
     // only TILE_HEIGHT scanlines so that no single GPU command runs long enough
@@ -156,6 +159,7 @@ void cudaCleanup()
     }
 
     freeSceneUploads();
+    freeEnvMapState();
     freeDenoiserState();
     freeWavefrontState();
     freeOptixState();

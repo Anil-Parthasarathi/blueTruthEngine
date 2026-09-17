@@ -48,6 +48,18 @@ std::vector<cudaTextureObject_t> s_texObjects_h;
 cudaTextureObject_t*             s_texObjects_d = nullptr;
 int                              s_textureCount = 0;
 
+std::vector<cudaArray_t>         s_cuArraysMr;
+std::vector<cudaTextureObject_t> s_texObjectsMr_h;
+cudaTextureObject_t*             s_texObjectsMr_d = nullptr;
+
+// ── Environment map (HDRI IBL) ──────────────────────────────────────
+EnvMapData    s_envMap_h              = {};
+bool          s_hasEnvMap             = false;
+cudaArray_t   s_envMapCuArray         = nullptr;
+cudaTextureObject_t s_envMapTexObj    = 0;
+float*        s_envMapMarginalCdf_d   = nullptr;
+float*        s_envMapConditionalCdf_d = nullptr;
+
 // ---------------------------------------------------------------------------
 //  OptiX state (RT-core acceleration)
 // ---------------------------------------------------------------------------

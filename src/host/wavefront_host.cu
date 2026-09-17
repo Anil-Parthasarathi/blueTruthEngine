@@ -77,9 +77,9 @@ static void ensureWavefrontBuffers(int width, int height)
     }
 
     WavefrontSoA& w = s_wf.soa;
-    // One path slot per pixel; shadow slots must cover area NEE + all spotlights.
+    // One path slot per pixel; shadow slots must cover area NEE + all spotlights + env map.
     w.maxPaths   = width * height;
-    w.maxShadows = w.maxPaths * (1 + s_spotlightCount + 1); // +1 area, +1 slack
+    w.maxShadows = w.maxPaths * (1 + s_spotlightCount + (s_hasEnvMap ? 1 : 0) + 1); // +1 area, +1 env, +1 slack
 
     const int  N = w.maxPaths;
     const int  M = w.maxShadows;
@@ -138,7 +138,10 @@ static WfSceneView buildSceneView(int frameIndex)
     sv.spotlights            = s_spotlights_d;
     sv.spotlightCount        = s_spotlightCount;
     sv.texObjects            = s_texObjects_d;
+    sv.texObjectsMr          = s_texObjectsMr_d;
     sv.textureCount          = s_textureCount;
+    sv.envMap                = s_envMap_h;
+    sv.hasEnvMap             = s_hasEnvMap;
     sv.accumBuffer           = s_accumBuffer_d;
     sv.frameIndex            = frameIndex;
     return sv;
